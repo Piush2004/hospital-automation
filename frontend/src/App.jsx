@@ -1,25 +1,33 @@
-import { useState } from "react";
-import ChatWidget from "./ChatWidget.jsx";
-import VoiceWidget from "./VoiceWidget.jsx";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
+import ProtectedRoute from "./components/ProtectedRoute.jsx";
+import AdminDashboard from "./pages/AdminDashboard.jsx";
+import DoctorDashboard from "./pages/DoctorDashboard.jsx";
+import PatientHome from "./pages/PatientHome.jsx";
+import StaffLogin from "./pages/StaffLogin.jsx";
 
 export default function App() {
-  const [mode, setMode] = useState("chat");
-
   return (
-    <div className="page">
-      <header className="page-header">
-        <h1>Hospital Automation</h1>
-        <p>Local demo — triage, doctor assignment, and booking, end to end.</p>
-        <div className="mode-toggle">
-          <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>
-            Text chat
-          </button>
-          <button className={mode === "voice" ? "active" : ""} onClick={() => setMode("voice")}>
-            Voice
-          </button>
-        </div>
-      </header>
-      {mode === "chat" ? <ChatWidget /> : <VoiceWidget />}
-    </div>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<PatientHome />} />
+        <Route path="/staff/login" element={<StaffLogin />} />
+        <Route
+          path="/staff/doctor"
+          element={
+            <ProtectedRoute roles={["doctor"]}>
+              <DoctorDashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/staff/admin"
+          element={
+            <ProtectedRoute roles={["admin", "front_desk"]}>
+              <AdminDashboard />
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
   );
 }

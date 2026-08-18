@@ -48,3 +48,4 @@ Thumbs.db
 # Alembic
 backend/alembic/versions/__pycache__/
 .uvicorn.log
+.vite.log

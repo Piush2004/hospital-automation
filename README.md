@@ -26,7 +26,7 @@ progress status.
 | Voice | faster-whisper (STT) + Ollama (LLM) + Piper (TTS), browser mic/speaker widget |
 | Payments | Mock checkout by default, or Razorpay Test Mode (`MOCK_PAYMENTS=false`) |
 | Reports | reportlab → PDF under `./storage/reports/`, delivered only after in-chat consent |
-| Auth | JWT, roles: patient, doctor, front_desk, admin |
+| Auth | JWT, staff-only (doctor/front_desk/admin) — patients stay phone-identified |
 
 ## Known limitations (by design, not bugs)
 
@@ -167,6 +167,29 @@ running (step 4, **with `--ws-max-size` set**) and the frontend running
 enter a phone number, click **Start voice call**, then hold the mic
 button to talk. First use will prompt for microphone permission.
 
+### 8. Staff dashboards (doctor / front desk / admin)
+
+`seed_demo_data.py` (step 2) creates a login for every seeded doctor plus
+one admin and one front-desk account, all under `@clinic.local` and
+sharing one password — printed to the console when you run the seed
+script (e.g. `ananya.rao@clinic.local` / that password). **Local dev
+only — never a real deployment credential.**
+
+With the backend and frontend running, open `http://localhost:5173/staff/login`
+(or click "Staff login" at the bottom of the patient chat page):
+
+- **Doctor accounts** land on `/staff/doctor` — see your own confirmed
+  appointments, mark one complete with notes, which generates the PDF
+  report and pushes the consent question into the patient's chat live if
+  they're connected. This replaces `doctor_cli.py` for day-to-day use;
+  that script still works as a scriptable fallback (and is what
+  `demo_walkthrough.py` drives directly).
+- **Admin / front-desk accounts** land on `/staff/admin` — an
+  appointments table, a doctor calendar (grouped list, not a real
+  calendar widget), an audit log viewer, and an emergency inbox that
+  surfaces the orchestrator's emergency fast-path flags for a human to
+  acknowledge.
+
 ## Docker (optional)
 
 ```bash
@@ -187,14 +210,16 @@ hospital-automation/
       cli_repl.py             <- text REPL for exercising the orchestrator directly
       doctor_cli.py            <- crude internal tool: complete a visit, attach notes
       models/                <- SQLAlchemy models
-      services/              <- DB access, business logic, PDF gen, payment providers, STT/TTS
+      services/              <- DB access, business logic, PDF gen, payment providers, STT/TTS, auth.py
       agents/                <- LangGraph orchestrator + specialist agents (incl. voice_agent.py)
-      channels/               <- web_chat, whatsapp_webhook, payments_web, reports_web, voice_ws
+      channels/               <- web_chat, whatsapp_webhook, payments_web, reports_web, voice_ws,
+                                   auth_web, doctor_dashboard, admin_dashboard
       llm/                    <- ollama_client.py
     alembic/
     tests/
   whatsapp-gateway/            <- Node + Baileys unofficial WhatsApp bridge
-  frontend/                    <- React + Vite widget (text chat + voice call modes)
+  frontend/                    <- React + Vite + React Router
+    src/pages/                <- PatientHome (chat/voice), StaffLogin, DoctorDashboard, AdminDashboard
   storage/
     reports/                  <- generated PDFs (gitignored)
     voices/                   <- downloaded Piper voice models (gitignored)
