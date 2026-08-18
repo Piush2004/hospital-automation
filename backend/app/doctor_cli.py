@@ -1,12 +1,18 @@
 """Crude internal tool for a doctor to mark a visit complete and attach
-notes. No auth (see CLAUDE.md deviations — the app has no JWT/login flow
-built yet, and standing one up just for this felt like scope creep ahead
-of Phase 9's admin dashboard). This is explicitly the "or a small CLI
-script" option, not the "minimal authenticated endpoint" one.
+notes. As of Phase 9, the *dashboard* (see app/channels/doctor_dashboard.py)
+is the primary, properly auth-gated way to do this day to day — this
+script is kept as a scriptable fallback (demo_walkthrough.py uses its
+functions directly, and it's handy for quick local testing without the
+frontend running). Since /internal/push-live is now locked down behind
+staff auth (see app/channels/internal.py), this script logs in first —
+worth noting it's the exact same login endpoint the dashboard uses, so
+this doubles as a rough manual check that staff auth actually works.
 
 Usage (from backend/, with the venv active):
     .venv/Scripts/python -m app.doctor_cli
 """
+
+import getpass
 
 import httpx
 
@@ -19,22 +25,53 @@ from app.services import notifications
 from app.services.appointments import complete_visit
 
 
-def _try_live_push(patient_id: int) -> None:
-    """Best-effort: if the API server is running and the patient has an
-    open websocket connection, nudge it to show the consent question
-    immediately instead of waiting for their next message. Doctor_cli
-    works fine without this succeeding — see module docstring and
-    app/channels/internal.py.
+def _login() -> str | None:
+    """Prompts for staff credentials and returns a bearer token, or None
+    if login fails/is skipped — callers should degrade gracefully rather
+    than treat this as fatal (see _try_live_push).
     """
     settings = get_settings()
+    email = input("Staff email (blank to skip live-push login): ").strip()
+    if not email:
+        return None
+    password = getpass.getpass("Password: ")
     try:
-        resp = httpx.post(f"{settings.app_base_url}/internal/push-live/{patient_id}", timeout=3.0)
+        resp = httpx.post(
+            f"{settings.app_base_url}/auth/login",
+            data={"username": email, "password": password},
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+    except httpx.HTTPError as exc:
+        print(f"Login failed ({exc}) - continuing without live push.")
+        return None
+
+
+def _try_live_push(patient_id: int, token: str | None) -> None:
+    """Best-effort: if the API server is running, we're logged in, and the
+    patient has an open websocket connection, nudge it to show the
+    consent question immediately instead of waiting for their next
+    message. Doctor_cli works fine without this succeeding — see module
+    docstring and app/channels/internal.py.
+    """
+    if token is None:
+        print("(No staff login - patient will see the consent question on their next message instead.)")
+        return
+    settings = get_settings()
+    try:
+        resp = httpx.post(
+            f"{settings.app_base_url}/internal/push-live/{patient_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=3.0,
+        )
         resp.raise_for_status()
     except httpx.HTTPError:
         print("(API server not reachable for live push - patient will see this on their next message.)")
 
 
 def main() -> None:
+    token = _login()
     db = SessionLocal()
     try:
         appointments = (
@@ -84,7 +121,7 @@ def main() -> None:
         db.commit()
         if sessions:
             print(f"Consent question queued for {len(sessions)} active session(s) for this patient.")
-            _try_live_push(appointment.patient_id)
+            _try_live_push(appointment.patient_id, token)
         else:
             print("Patient has no active chat session right now - they'll see this next time they message in.")
 

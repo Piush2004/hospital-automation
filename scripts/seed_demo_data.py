@@ -17,7 +17,13 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.db import SessionLocal  # noqa: E402
-from app.models import Department, Doctor, DoctorAvailability, Patient  # noqa: E402
+from app.models import Department, Doctor, DoctorAvailability, Patient, User, UserRole  # noqa: E402
+from app.services.auth import hash_password  # noqa: E402
+
+# Local dev/demo only - never a real deployment credential. Every seeded
+# staff account (doctors, admin, front desk) shares this password so the
+# README can give one line of login instructions instead of a table.
+DEV_STAFF_PASSWORD = "DevPass123!"
 
 DEPARTMENTS = [
     ("General Medicine", "First point of contact for most non-specialist complaints."),
@@ -82,6 +88,12 @@ DOCTORS = [
     ),
 ]
 
+def _staff_email(full_name: str) -> str:
+    """"Dr. Ananya Rao" -> "ananya.rao@clinic.local" """
+    name = full_name.removeprefix("Dr. ").strip().lower()
+    return f"{name.replace(' ', '.')}@clinic.local"
+
+
 PATIENTS = [
     ("Arjun Verma", "+919810000001", "arjun.verma@example.com", date(1990, 4, 12), "male"),
     ("Sneha Kapoor", "+919810000002", "sneha.kapoor@example.com", date(1985, 11, 2), "female"),
@@ -127,6 +139,18 @@ def seed() -> None:
                         )
                     )
 
+            # Every doctor gets a login, linked back so the dashboard can
+            # scope "my appointments" to the logged-in doctor.
+            email = _staff_email(full_name)
+            user = db.query(User).filter_by(email=email).one_or_none()
+            if user is None:
+                user = User(email=email, hashed_password=hash_password(DEV_STAFF_PASSWORD), role=UserRole.doctor)
+                db.add(user)
+                db.flush()
+                print(f"+ staff login: {email} (doctor)")
+            if doctor.user_id is None:
+                doctor.user_id = user.id
+
         for full_name, phone, email, dob, gender in PATIENTS:
             patient = db.query(Patient).filter_by(phone=phone).one_or_none()
             if patient is None:
@@ -141,8 +165,16 @@ def seed() -> None:
                 )
                 print(f"+ patient: {full_name} ({phone})")
 
+        for email, role in [("admin@clinic.local", UserRole.admin), ("frontdesk@clinic.local", UserRole.front_desk)]:
+            user = db.query(User).filter_by(email=email).one_or_none()
+            if user is None:
+                db.add(User(email=email, hashed_password=hash_password(DEV_STAFF_PASSWORD), role=role))
+                print(f"+ staff login: {email} ({role.value})")
+
         db.commit()
         print("Seed complete.")
+        print(f"\nAll seeded staff accounts share the password: {DEV_STAFF_PASSWORD}")
+        print("(local dev only - never a real deployment credential)")
     finally:
         db.close()
 

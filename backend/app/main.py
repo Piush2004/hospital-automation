@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.channels.admin_dashboard import router as admin_router
+from app.channels.auth_web import router as auth_router
+from app.channels.doctor_dashboard import router as doctor_router
 from app.channels.internal import router as internal_router
 from app.channels.payments_web import router as payments_router
 from app.channels.reports_web import router as reports_router
@@ -29,6 +32,9 @@ app.include_router(reports_router)
 app.include_router(internal_router)
 app.include_router(whatsapp_router)
 app.include_router(voice_router)
+app.include_router(auth_router)
+app.include_router(doctor_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")

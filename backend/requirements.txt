@@ -14,7 +14,11 @@ python-dotenv>=1.0,<2.0
 
 # --- Auth ---
 python-jose[cryptography]>=3.3,<4.0
-passlib[bcrypt]>=1.7,<2.0
+passlib>=1.7,<2.0
+# passlib 1.7.4's bcrypt backend probes bcrypt.__about__.__version__,
+# which bcrypt>=4.1 removed - pin below that or password hashing throws
+# at import/first-use. https://github.com/pyca/bcrypt/issues/684
+bcrypt>=4.0,<4.1
 
 # --- Agent orchestration ---
 langgraph>=0.2,<0.3
