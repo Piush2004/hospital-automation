@@ -14,6 +14,8 @@ class Doctor(Base, TimestampMixin):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), unique=True, nullable=True)
     department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"), nullable=False)
 
+    # Expected to include any honorific ("Dr. Jane Doe") — there's no
+    # separate title field, and chat replies interpolate this as-is.
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     specialty: Mapped[str] = mapped_column(String(255), nullable=False)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -8,7 +8,7 @@ sessions. **Read this first in any new session.** Update the "Status" and
 
 ## STATUS (updated 2026-08-18)
 
-**Current phase: 0 (scaffold) in progress.**
+**Phases 0-3 done. Phase 4 (web chat channel) up next.**
 
 Environment discovered on this machine:
 - Python 3.14.5 is the system default, but LangGraph/SQLAlchemy/etc. are
@@ -17,17 +17,73 @@ Environment discovered on this machine:
   --python .venv` for all backend deps, and invoke the venv's own
   python/uvicorn/alembic directly (`.venv/Scripts/...` on Windows) rather
   than relying on `python`/`pip` on PATH.
-- Ollama is installed (v0.32.6) but only has `qwen2.5:3b-instruct` and
-  `nemotron-mini` pulled — **not** the pinned `qwen2.5:7b-instruct-q4_K_M`.
-  Need to `ollama pull qwen2.5:7b-instruct-q4_K_M` (or accept 3b as a
-  lighter-weight stand-in during dev — it's noticeably worse at
-  structured tool-calling, expect to lean on the deterministic-router
-  fallback more if using it).
+- Ollama is installed (v0.32.6). `qwen2.5:7b-instruct-q4_K_M` (the pinned
+  model) was being pulled in the background as of this update — check
+  `ollama list`. `qwen2.5:3b-instruct` and `nemotron-mini` are also
+  available locally as lighter fallbacks. **`.env` is currently pinned to
+  `qwen2.5:3b-instruct`** as a temporary stand-in while the 7b model
+  downloaded (slow connection, ~30 min pull) — switch `OLLAMA_MODEL` (and
+  set a real `OLLAMA_FALLBACK_MODEL`, e.g. `llama3.1:8b-instruct-q4_K_M`
+  if you pull it) back to the pinned model once available, and remove the
+  temporary note comment above it in `.env`.
 - Node v24.16.0, git 2.54.0 available.
 - No Docker verified yet — docker-compose.yml is a stub, not yet tested.
+- `.env` exists locally (gitignored, not committed) — copied from
+  `.env.example`. A fresh session/machine needs to re-copy it.
 
-Next up: finish Phase 0 (README/env/gitignore done, need first commit),
-then Phase 1 (SQLAlchemy models + Alembic + seed script).
+### What's built (Phases 0-3)
+
+- **Data layer**: SQLAlchemy models for User, Patient, Doctor +
+  DoctorAvailability (weekly recurring windows), Department, Appointment,
+  Payment, Report, ConversationSession, AuditLog. One Alembic migration
+  applied. `scripts/seed_demo_data.py` seeds 6 departments, 7 doctors
+  (with availability), 5 patients — idempotent, safe to re-run.
+- **Services layer** (`backend/app/services/`): the DB "tools" agents
+  call — patients, departments, doctors (incl. simple load-balancing via
+  `best_available_doctor`), scheduling (weekly-availability-minus-bookings
+  slot search + booking), conversations (session persistence), audit
+  logging, and a deterministic keyword-based `emergency.py`.
+- **LLM wiring** (`backend/app/llm/`): `ollama_client.py` wraps the
+  Ollama chat API with retry + fallback-model logic and a `chat_json`
+  helper that returns `None` (not an exception) on unparseable output, so
+  callers can degrade gracefully. `prompts.py` has the triage
+  classification prompt template.
+- **Agents** (`backend/app/agents/`):
+  - `triage_agent.py` — LLM-based symptom→department classification with
+    a deterministic keyword fallback (see "Deviations" below).
+  - `scheduling_agent.py` — fully deterministic: doctor assignment,
+    slot-finding, slot-choice parsing, booking. No LLM involved by design.
+  - `orchestrator.py` — the LangGraph supervisor. **Per-turn graph**: a
+    channel calls `run_turn(db, state, user_input)` once per inbound
+    message; state is a plain JSON-serializable dict persisted in
+    `ConversationSession.state` between calls (no live graph process, no
+    checkpointer needed). Routing is deterministic, keyed off a `stage`
+    field. Graph shape and full rationale are documented in the module
+    docstring — read it before modifying.
+- **CLI REPL** (`backend/app/cli_repl.py`): `python -m app.cli_repl
+  [phone]` — manually verified end-to-end: new-patient name capture,
+  LLM-based triage → doctor assignment → slot listing → booking, and the
+  emergency fast-path (with audit log entry). All working against the
+  real seeded DB.
+- **Tests**: 17 pytest tests across scheduling, emergency detection,
+  triage fallback, and full orchestrator conversation flows (in-memory
+  SQLite fixture in `tests/conftest.py`). All passing.
+
+### Bug found & fixed during Phase 2/3 testing
+
+SQLite doesn't round-trip `tzinfo` through SQLAlchemy's
+`DateTime(timezone=True)` — values read back naive. `available_slots()`
+in `scheduling.py` was building its "already booked" exclusion set from
+DB rows (naive) and comparing against freshly-generated candidate slots
+(tz-aware UTC); naive != aware always compares False, so **booked slots
+were never actually excluded** — a real double-booking bug, not just a
+test artifact. Fixed by re-attaching UTC tzinfo when reading booked slots
+back out. Caught by `test_available_slots_excludes_booked` — this is why
+the pytest suite matters even in a fast-moving MVP.
+
+Next up: Phase 4 — FastAPI WebSocket endpoint (`app/channels/web_chat.py`)
+that calls the same `run_turn()` used by the CLI, + a minimal React
+(Vite) chat widget in `frontend/`.
 
 ---
 
@@ -188,4 +244,21 @@ own smoke test.
 
 ## Deviations from plan (log as they happen)
 
-- None yet.
+- **Supervisor routing is deterministic, not LLM-driven.** The
+  orchestrator's node-to-node routing (`orchestrator.py`) is keyed off an
+  explicit `stage` field rather than an LLM deciding "which agent next."
+  Only symptom→department classification (triage) actually calls the
+  local LLM; scheduling (slot search, booking) is pure DB logic. This
+  follows the working rule "a working simple thing beats a broken clever
+  thing" — control flow correctness matters more than flexibility here,
+  and a 7B-class local model adds real value in the one place it's used
+  (free-text interpretation) without being asked to also reliably drive
+  graph control flow.
+- **Phases 2 and 3 were built together**, not sequentially. The
+  orchestrator skeleton (Phase 2) isn't meaningfully testable without
+  LLM-based triage, so `ollama_client.py` / `prompts.py` (Phase 3) landed
+  in the same session before the Phase 2 CLI smoke test could run.
+- **Emergency detection is deterministic keyword matching**, not LLM
+  based — intentional, not a fallback-of-convenience. See the docstring
+  in `app/services/emergency.py`: a safety-critical gate shouldn't depend
+  on a small local model's occasional miss.
