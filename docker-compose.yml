@@ -3,7 +3,10 @@ version: "3.9"
 # Optional one-command spin-up. Everything here also runs without Docker
 # via plain pip/npm — see README.md "Local dev (no Docker)".
 #
-# NOTE: whatsapp-gateway (Phase 7) isn't wired up yet.
+# NOTE on whatsapp-gateway: still requires a one-time interactive QR scan
+# even under Docker — `docker compose logs -f whatsapp-gateway` to see it.
+# Session credentials persist in the whatsapp_gateway_auth volume, so you
+# only need to do this once per volume.
 
 services:
   ollama:
@@ -28,6 +31,9 @@ services:
     environment:
       - DATABASE_URL=sqlite:////data/hospital.db
       - OLLAMA_BASE_URL=http://ollama:11434
+      - APP_BASE_URL=http://localhost:8000
+      - WHATSAPP_GATEWAY_URL=http://whatsapp-gateway:3001
+      - WHATSAPP_WEBHOOK_SECRET=${WHATSAPP_WEBHOOK_SECRET:-change-me}
     volumes:
       - ./storage:/app/storage
       - backend_data:/data
@@ -43,6 +49,25 @@ services:
     depends_on:
       - backend
 
+  whatsapp-gateway:
+    build: ./whatsapp-gateway
+    ports:
+      - "3001:3001"
+    environment:
+      - WEBHOOK_URL=http://backend:8000/webhook/whatsapp
+      - WEBHOOK_SECRET=${WHATSAPP_WEBHOOK_SECRET:-change-me}
+      - PORT=3001
+    volumes:
+      - whatsapp_gateway_auth:/app/auth_info
+    depends_on:
+      - backend
+    # Needs a real TTY to render the pairing QR code readably:
+    # `docker compose run --rm whatsapp-gateway` for first-time pairing,
+    # or watch `docker compose logs -f whatsapp-gateway`.
+    stdin_open: true
+    tty: true
+
 volumes:
   ollama_data:
   backend_data:
+  whatsapp_gateway_auth:

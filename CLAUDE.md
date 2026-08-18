@@ -8,12 +8,16 @@ sessions. **Read this first in any new session.** Update the "Status" and
 
 ## STATUS (updated 2026-08-18, session 2)
 
-**Phases 0-6 done — this session's target reached, with headroom to
-spare.** A real text conversation (browser chat widget or CLI) can
-triage a symptom, assign a doctor, book a real appointment, pay for it
-(mock checkout by default), have a doctor complete the visit with notes,
-ask the patient for consent, and deliver a generated PDF report in-chat
-— fully offline, end to end. Phase 7 (WhatsApp gateway) is next.
+**Phases 0-7 done.** A real text conversation (browser chat widget, CLI,
+or now real WhatsApp) can triage a symptom, assign a doctor, book a real
+appointment, pay for it (mock checkout by default), have a doctor
+complete the visit with notes, ask the patient for consent, and deliver
+a generated PDF report in-chat — fully offline, end to end, over any of
+those three channels. Original session target was Phase 5+6; Phase 7 was
+built too since there was plenty of headroom left (user opted in when
+asked, given the WhatsApp/Baileys ban-risk caveat). Phase 8 (voice) is
+next, unless Phase 9 (admin dashboard) or real auth becomes the
+priority instead — see "Deviations" for why auth got deferred twice now.
 
 Environment discovered/changed this session:
 - Python 3.14.5 is the system default, but LangGraph/SQLAlchemy/etc. are
@@ -22,37 +26,42 @@ Environment discovered/changed this session:
   --python .venv` for all backend deps, and invoke the venv's own
   python/uvicorn/alembic directly (`.venv/Scripts/...` on Windows) rather
   than relying on `python`/`pip` on PATH.
-- Ollama is installed (v0.32.6). `qwen2.5:7b-instruct-q4_K_M` (the pinned
-  model) has been re-attempted across two sessions and was at 93%/4.7GB
-  as of this update, still running in the background — check `ollama
-  list`; if it's still missing, re-run `ollama pull
-  qwen2.5:7b-instruct-q4_K_M`. `qwen2.5:3b-instruct` and `nemotron-mini`
-  are available locally as lighter fallbacks. **`.env` is currently
-  pinned to `qwen2.5:3b-instruct`** — switch `OLLAMA_MODEL` (and set a
-  real `OLLAMA_FALLBACK_MODEL`) back to the pinned model once it's
-  actually pulled. Note: only triage calls the LLM at all in this whole
-  app (Phases 5+ are pure DB/deterministic logic), so this has had zero
-  effect on functionality — just department-classification quality.
+- **`qwen2.5:7b-instruct-q4_K_M` (the pinned model) finished pulling this
+  session** after being re-attempted across two sessions total (slow
+  connection). `.env`'s `OLLAMA_MODEL` is now set to it, with
+  `qwen2.5:3b-instruct` as `OLLAMA_FALLBACK_MODEL`. Re-verified the full
+  demo_walkthrough.py loop against it — works, and triage picks
+  sensible-if-different departments than the 3b model did (e.g. General
+  Medicine instead of Cardiology for "cough and chest tightness" — both
+  defensible). `llama3.1:8b-instruct-q4_K_M` (the originally-pinned
+  fallback) was never pulled; `qwen2.5:3b-instruct` is standing in for it
+  and works fine as a fallback.
 - Node v24.16.0, git 2.54.0 available. Docker 29.7.2 + Compose v5.4.0
   available but **still not tested end-to-end** — Dockerfiles exist for
-  backend/frontend, non-Docker path is what's actually verified.
+  backend/frontend/whatsapp-gateway and docker-compose.yml wires up all
+  four services, but the non-Docker path is what's actually verified.
 - `.env` exists locally (gitignored, not committed) — copied from
-  `.env.example`. A fresh session/machine needs to re-copy it; this
-  session added `APP_BASE_URL` and `SMTP_ENABLED` keys — diff against
-  `.env.example` if picking up an old `.env`.
-- **`uvicorn --reload` hung mid-reload this session** (one file changed,
-  logged "Reloading...", then never restarted — kept serving stale code
-  indefinitely with no error). Cost some debugging time before it was
-  noticed (routes returned generic 404s instead of the app's actual
-  responses). Killed both the reloader and worker PIDs and started a
-  **plain `uvicorn app.main:app --port 8000` without `--reload`**
-  instead. If you use `--reload` next session, verify routes actually
+  `.env.example`. A fresh session/machine needs to re-copy it; recent
+  sessions added `APP_BASE_URL` and `SMTP_ENABLED` keys — diff against
+  `.env.example` if picking up an old `.env`. `whatsapp-gateway/.env`
+  is a **separate** file (also gitignored) — copy from
+  `whatsapp-gateway/.env.example` too if running the gateway.
+- **`uvicorn --reload` hung mid-reload earlier this session** (one file
+  changed, logged "Reloading...", then never restarted — kept serving
+  stale code indefinitely with no error). Cost some debugging time before
+  it was noticed (routes returned generic 404s instead of the app's
+  actual responses). If you use `--reload`, verify routes actually
   changed after an edit (curl something route-specific) rather than
-  trusting the log alone — don't assume it silently worked.
-- Dev servers as of this update: backend uvicorn on :8000 (no
-  `--reload`, see above — restart manually after further code changes).
-  Frontend (:5173) is **not currently running** — `npm run dev` in
-  `frontend/` if you want it up.
+  trusting the log alone.
+- Dev servers as of this update: **backend uvicorn is running** on :8000
+  (no `--reload`, see above — restart manually after further code
+  changes; running the pinned 7b model). Frontend (:5173) and the
+  WhatsApp gateway (:3001) are **both stopped** (gateway was killed after
+  Phase 7 testing since it can't do anything useful unpaired — no real
+  WhatsApp account has been paired against this build yet, so
+  `whatsapp-gateway/auth_info/` is empty and a fresh `npm start` will
+  print a QR code needing a real scan). Restart either per README when
+  needed.
 
 ### What's built (Phases 0-3)
 
@@ -246,9 +255,84 @@ the pytest suite matters even in a fast-moving MVP.
   non-interactively (book → pay → doctor completes visit → consent →
   deliver), confirmed re-runnable.
 
-Next up: Phase 7 — WhatsApp gateway (Baileys). No auth/JWT system exists
-yet (see deviations) — if Phase 9's admin dashboard becomes the next
-priority instead, that's the point auth will actually need to get built.
+### What's built (Phase 7)
+
+- **`whatsapp-gateway/`** (new top-level service, Node + CommonJS):
+  `index.js` uses `@whiskeysockets/baileys` (the actively-maintained
+  fork — the plain `baileys` package name is stale/deprecated) with
+  `useMultiFileAuthState` for session persistence in `./auth_info/`
+  (gitignored). Deliberately minimal deps: no Express — the `/send`
+  endpoint is hand-rolled on Node's built-in `http` module, and outbound
+  webhook calls use Node 18+'s built-in global `fetch` rather than
+  adding axios/node-fetch.
+- **Two message flows**, matching the async-notification pattern
+  established in Phase 5: **inbound** (WhatsApp message arrives →
+  `messages.upsert` → `POST /webhook/whatsapp` on the backend → backend
+  runs one orchestrator turn and returns `{reply}` synchronously → relay
+  over the same Baileys socket) and **outbound/proactive** (backend
+  wants to nudge a patient who isn't mid-message — payment confirmed,
+  report ready — via `notifications.push_live`'s new whatsapp branch →
+  `POST http://gateway/send {phone, message}` → gateway relays it).
+  WhatsApp doesn't fit the websocket-shaped `live_connections` registry
+  (there's no per-conversation connection object, just one gateway
+  that's either reachable or not), so it's handled as a special case in
+  `push_live` instead of being forced into that abstraction.
+- **`app/channels/whatsapp_webhook.py`** (new): `POST /webhook/whatsapp`,
+  a `{phone, message, secret}` → `{reply}` adapter over the same
+  `run_turn()` every channel uses. Rejects on `secret` mismatch (401).
+  First-contact handling differs deliberately from web_chat's websocket:
+  there's no separate "connect" event to proactively push a greeting
+  through, so on a brand-new session it replies with *just* the
+  greeting and does not process whatever the patient's actual first
+  message said — same semantics as every other channel (their real
+  first answer is their *next* message), rather than guessing whether
+  their opening "hi" was meant to answer a question they hadn't been
+  asked yet.
+- **`app/services/whatsapp_client.py`** (new): the outbound half —
+  `send_whatsapp_message(phone, text)`, a thin `httpx.post` to the
+  gateway's `/send`. Called via `asyncio.to_thread` from
+  `notifications.push_live` since it's a blocking call inside an async
+  function.
+- **A real bug caught and fixed in the gateway itself**: `makeWASocket()`
+  returns a socket object synchronously, well before the connection is
+  actually authenticated — checking `if (!currentSocket)` to guard the
+  `/send` endpoint was wrong, since the object exists immediately but
+  calling `.sendMessage()` on it before the connection is actually
+  "open" fails deep inside Baileys with an unhelpful
+  `Cannot read properties of undefined (reading 'id')` error instead of
+  a clean 503. Fixed by tracking a real `isConnected` boolean set from
+  the `connection.update` event's `open`/`close` transitions. Caught by
+  actually calling the endpoint, not by inspection — worth remembering
+  next time something here "looks obviously fine."
+- **What's actually been verified** (honest boundary — see "Deviations"):
+  the FastAPI webhook side end-to-end against the real backend and DB
+  (secret rejection, first-contact greeting-only reply, full
+  triage→booking→payment-link flow, all via curl simulating what the
+  gateway sends) and the gateway's own HTTP plumbing (`/send`'s 503 when
+  unpaired, confirmed correct after the bug fix above; the backend's
+  `push_live` correctly calling it and degrading gracefully on failure).
+  **The actual Baileys↔WhatsApp connection has never been paired or
+  tested against a real account** — that step requires a human scanning
+  a QR code with a phone, which no session so far has had available.
+  Whoever does this first should watch for: message formatting
+  differences (WhatsApp may render the numbered slot list oddly),
+  whether `extractText` handles all the message shapes real WhatsApp
+  clients send (voice notes, reactions, edits — currently only handles
+  plain text/caption), and the reconnect logic on real network drops.
+- **docker-compose.yml** now wires up all four services, with
+  service-name-based URLs for the container network
+  (`WHATSAPP_GATEWAY_URL=http://whatsapp-gateway:3001` etc.) and a
+  named volume for `auth_info` persistence. Still unverified like the
+  rest of the Docker path.
+- No new pytest tests this phase — see the "channel adapters aren't
+  pytest-unit-tested" note in Deviations below for why, consistent with
+  how `web_chat.py` and `payments_web.py` were already handled.
+
+Next up: Phase 8 (voice) is the nominal next phase, but Phase 9 (admin
+dashboard) or building real auth might be higher-value first — no JWT/
+login system exists anywhere yet, and it's been deferred twice now (see
+Deviations). Worth explicitly asking the user which they'd rather have
+next rather than assuming the numeric phase order still matches priority.
 
 ---
 
@@ -470,3 +554,29 @@ own smoke test.
   it on their next message" — never a hard failure. The keyword-triggered
   re-ask doesn't need any of this, since it's answered synchronously
   within whatever request/turn triggered it.
+- **Channel adapters (`web_chat.py`, `payments_web.py`,
+  `whatsapp_webhook.py`) aren't pytest-unit-tested.** They all use
+  `SessionLocal()` directly rather than FastAPI's `Depends(get_db)`
+  pattern, which was the right call for a single-user local prototype
+  (no request-scoped session lifecycle complexity needed) but means a
+  `TestClient` would hit the real dev DB, not an isolated test one —
+  wrong for unit tests. The actual logic they call (`run_turn`, every
+  agent) is thoroughly covered; these are deliberately thin,
+  verified-by-actually-running-them adapters instead. If this app ever
+  needs proper endpoint-level tests, that's the point to introduce
+  `Depends(get_db)` + a test-DB override — don't bolt on a parallel
+  testing scheme without also fixing the underlying DB-access pattern.
+- **WhatsApp gateway has never touched a real WhatsApp account.**
+  Everything up to the Baileys↔WhatsApp boundary is verified (see "What's
+  built (Phase 7)" above); the actual pairing requires a human with a
+  phone, which no session has had. Treat the gateway as "should work,
+  unverified past that specific boundary" rather than "done."
+- **Auth/JWT has now been deferred twice** (Phase 5's payments and Phase
+  6's report-completion both explicitly chose not to build it). This is
+  still the right call — building real auth for one gated action each
+  time is worse than building it once, properly, when something actually
+  needs a full login system (Phase 9's admin dashboard is the obvious
+  trigger). But it's worth flagging explicitly rather than let it become
+  an implicit assumption: **there is currently no user authentication
+  anywhere in this app.** `doctor_cli.py` and the `/internal/*` and
+  `/reports/{id}/download` endpoints all trust the caller.

@@ -22,19 +22,20 @@ progress status.
 | LLM runtime | Ollama (`qwen2.5:7b-instruct-q4_K_M`, fallback `llama3.1:8b-instruct-q4_K_M`) |
 | Agent orchestration | LangGraph (self-hosted, no LangSmith/cloud) |
 | Web chat | FastAPI WebSocket + React (Vite) widget |
-| WhatsApp (Phase 7) | Baileys gateway (unofficial) → FastAPI webhook |
+| WhatsApp | Baileys gateway (unofficial) → FastAPI webhook |
 | Voice (Phase 8) | faster-whisper + Ollama + Piper TTS, browser mic/speaker widget |
-| Payments | Razorpay Test Mode / `MOCK_PAYMENTS=true` |
-| Reports | reportlab → PDF under `./storage/reports/` |
+| Payments | Mock checkout by default, or Razorpay Test Mode (`MOCK_PAYMENTS=false`) |
+| Reports | reportlab → PDF under `./storage/reports/`, delivered only after in-chat consent |
 | Auth | JWT, roles: patient, doctor, front_desk, admin |
 
 ## Known limitations (by design, not bugs)
 
-- **WhatsApp gateway (Phase 7)** uses Baileys, an unofficial WhatsApp Web
-  protocol library. This is **ToS-grey-area** and can get a phone number
-  banned. It's fine for local prototyping only. Swap to the official Meta
-  WhatsApp Cloud API (free tier, ~1000 conversations/mo, needs business
-  verification) before any real deployment.
+- **WhatsApp gateway** uses Baileys, an unofficial WhatsApp Web protocol
+  library. This is **ToS-grey-area** and can get a phone number banned.
+  It's fine for local prototyping only — use a throwaway/test number, not
+  your primary one. Swap to the official Meta WhatsApp Cloud API (free
+  tier, ~1000 conversations/mo, needs business verification) before any
+  real deployment.
 - **Voice (Phase 8)** is a browser-based mic/speaker widget, not a real
   phone call — there is no free way to place/receive actual PSTN calls.
   A clean seam is left to plug in Twilio/Exotel later (that costs money).
@@ -103,6 +104,44 @@ npm install
 npm run dev
 ```
 
+### 5. Try the payments + reports loop
+
+With the backend running (step 4), either click through the web chat
+widget, or run the scripted transcript:
+
+```bash
+# from backend/
+.venv/Scripts/python ../scripts/demo_walkthrough.py
+```
+
+This books an appointment, pays for it (mock checkout, no setup needed),
+then simulates a doctor completing the visit and the patient consenting
+to receive their report — all non-interactively. To do the "doctor"
+step yourself instead:
+
+```bash
+.venv/Scripts/python -m app.doctor_cli
+```
+
+### 6. WhatsApp gateway (Phase 7)
+
+**Read the ToS caveat under "Known limitations" above before doing this
+against a real phone number.** Use a throwaway/test WhatsApp account, not
+your primary one.
+
+```bash
+cd whatsapp-gateway
+npm install
+cp .env.example .env       # defaults match backend/.env's WHATSAPP_* keys
+npm start
+```
+
+Scan the printed QR code with WhatsApp (**Settings → Linked Devices →
+Link a Device**) on the phone you're pairing. Session credentials are
+cached in `whatsapp-gateway/auth_info/` (gitignored) so you only need to
+scan once. Once connected, message that WhatsApp number from any other
+phone — the reply comes from the same orchestrator the web chat uses.
+
 ## Docker (optional)
 
 ```bash
@@ -120,15 +159,18 @@ hospital-automation/
   backend/
     app/
       main.py
+      cli_repl.py             <- text REPL for exercising the orchestrator directly
+      doctor_cli.py            <- crude internal tool: complete a visit, attach notes
       models/                <- SQLAlchemy models
-      services/              <- DB access, business logic, PDF gen, mock payments
+      services/              <- DB access, business logic, PDF gen, payment providers
       agents/                <- LangGraph orchestrator + specialist agents
-      channels/               <- web_chat (Phase 4), whatsapp_webhook (Phase 7), voice_ws (Phase 8)
+      channels/               <- web_chat, whatsapp_webhook, payments_web, reports_web
       llm/                    <- ollama_client.py
     alembic/
     tests/
-  whatsapp-gateway/            <- Node + Baileys, Phase 7 only
-  frontend/                    <- React + Vite: chat widget + admin dashboard
+  whatsapp-gateway/            <- Node + Baileys unofficial WhatsApp bridge
+  frontend/                    <- React + Vite chat widget
   scripts/
     seed_demo_data.py
+    demo_walkthrough.py       <- scripted book->pay->complete->consent->deliver transcript
 ```

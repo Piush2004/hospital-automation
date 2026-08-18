@@ -1,0 +1,17 @@
+{
+  "name": "hospital-automation-whatsapp-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "type": "commonjs",
+  "description": "Unofficial WhatsApp Web bridge (Baileys) -> FastAPI orchestrator webhook. See README.md for the ToS caveat before running this against a real number.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "dotenv": "^16.4.5",
+    "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
