@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env
+.env
+*.local
+
+# DB
+*.db
+*.sqlite
+*.sqlite3
+
+# Storage (generated files)
+storage/reports/*.pdf
+!storage/reports/.gitkeep
+
+# Node
+node_modules/
+dist/
+frontend/dist/
+frontend/node_modules/
+whatsapp-gateway/node_modules/
+whatsapp-gateway/auth_info/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Alembic
+backend/alembic/versions/__pycache__/

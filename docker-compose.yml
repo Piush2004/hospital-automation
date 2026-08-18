@@ -1,0 +1,41 @@
+version: "3.9"
+
+# Optional one-command spin-up. Everything here also runs without Docker
+# via plain pip/npm — see README.md "Local dev (no Docker)".
+#
+# NOTE (Phase 0): only `ollama` and `backend` are wired up so far.
+# whatsapp-gateway (Phase 7) and frontend (Phase 4+) get added as those
+# phases land.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment to enable GPU acceleration under Docker Desktop + WSL2:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:////data/hospital.db
+      - OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      - ./storage:/app/storage
+      - backend_data:/data
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_data:
+  backend_data:
