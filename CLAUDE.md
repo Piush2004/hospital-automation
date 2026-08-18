@@ -8,7 +8,10 @@ sessions. **Read this first in any new session.** Update the "Status" and
 
 ## STATUS (updated 2026-08-18)
 
-**Phases 0-3 done. Phase 4 (web chat channel) up next.**
+**Phases 0-4 done — this session's target reached.** A real text
+conversation (browser chat widget or CLI) can triage a symptom, assign a
+doctor, and book a real appointment against the local DB, fully offline.
+Phase 5 (payments) is next.
 
 Environment discovered on this machine:
 - Python 3.14.5 is the system default, but LangGraph/SQLAlchemy/etc. are
@@ -81,9 +84,35 @@ test artifact. Fixed by re-attaching UTC tzinfo when reading booked slots
 back out. Caught by `test_available_slots_excludes_booked` — this is why
 the pytest suite matters even in a fast-moving MVP.
 
-Next up: Phase 4 — FastAPI WebSocket endpoint (`app/channels/web_chat.py`)
-that calls the same `run_turn()` used by the CLI, + a minimal React
-(Vite) chat widget in `frontend/`.
+### What's built (Phase 4)
+
+- **`backend/app/channels/web_chat.py`** — FastAPI WebSocket endpoint at
+  `/ws/chat?phone=<phone>`. Thin adapter: identify/create patient +
+  session (same services the CLI uses), then loop on `run_turn()`. One
+  JSON frame per turn out (`{"role", "content", "stage"}`), one text
+  frame per turn in. CORS opened for `localhost:5173` (Vite dev) in
+  `main.py` — tighten before any real deployment.
+- **`frontend/`** — minimal React + Vite chat widget (no UI framework, no
+  state library — plain hooks + CSS, per the "modest footprint"
+  constraint). Phone-number "identify" screen, then a chat log +
+  composer. Shows a red emergency banner when a turn's response carries
+  `stage: "emergency"`. `VITE_WS_URL` env var overrides the WS endpoint
+  (defaults to `ws://localhost:8000/ws/chat`).
+- **Verified two ways**: a raw Python `websockets` client script
+  (booking flow end-to-end) and manually in Chrome via claude-in-chrome
+  (typed a symptom, got triaged to Orthopedics, booked a slot, screenshot
+  confirmed the UI renders correctly, no console errors).
+- **Dockerfiles added** for `backend/` and `frontend/` and
+  `docker-compose.yml` now wires up all three services (ollama, backend,
+  frontend) — **not yet tested end-to-end via `docker compose up`**; the
+  non-Docker path is what's actually been verified this session.
+
+Dev servers were left running at the end of this session for a quick
+first look: backend on :8000, frontend on :5173. Restart per README if
+they're no longer up.
+
+Next up: Phase 5 — Payments agent (mock-mode first, then Razorpay
+test-mode keys behind the same interface).
 
 ---
 

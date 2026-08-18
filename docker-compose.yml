@@ -3,9 +3,7 @@ version: "3.9"
 # Optional one-command spin-up. Everything here also runs without Docker
 # via plain pip/npm — see README.md "Local dev (no Docker)".
 #
-# NOTE (Phase 0): only `ollama` and `backend` are wired up so far.
-# whatsapp-gateway (Phase 7) and frontend (Phase 4+) get added as those
-# phases land.
+# NOTE: whatsapp-gateway (Phase 7) isn't wired up yet.
 
 services:
   ollama:
@@ -35,6 +33,15 @@ services:
       - backend_data:/data
     depends_on:
       - ollama
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_WS_URL=ws://localhost:8000/ws/chat
+    depends_on:
+      - backend
 
 volumes:
   ollama_data:
