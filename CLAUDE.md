@@ -8,12 +8,14 @@ sessions. **Read this first in any new session.** Update the "Status" and
 
 ## STATUS (updated 2026-08-18, session 2)
 
-**Phases 0-5 done.** A real text conversation (browser chat widget or
-CLI) can triage a symptom, assign a doctor, book a real appointment, and
-now pay for it (mock checkout by default) — end to end, fully offline.
-Phase 6 (reports) is next.
+**Phases 0-6 done — this session's target reached, with headroom to
+spare.** A real text conversation (browser chat widget or CLI) can
+triage a symptom, assign a doctor, book a real appointment, pay for it
+(mock checkout by default), have a doctor complete the visit with notes,
+ask the patient for consent, and deliver a generated PDF report in-chat
+— fully offline, end to end. Phase 7 (WhatsApp gateway) is next.
 
-Environment discovered on this machine:
+Environment discovered/changed this session:
 - Python 3.14.5 is the system default, but LangGraph/SQLAlchemy/etc. are
   not yet reliably tested on it → using **Python 3.11.15** via `uv venv`
   at `backend/.venv` instead. Use `uv pip install -r requirements.txt
@@ -21,29 +23,36 @@ Environment discovered on this machine:
   python/uvicorn/alembic directly (`.venv/Scripts/...` on Windows) rather
   than relying on `python`/`pip` on PATH.
 - Ollama is installed (v0.32.6). `qwen2.5:7b-instruct-q4_K_M` (the pinned
-  model) has been re-attempted twice across two sessions and still hasn't
-  finished — connection is slow/flaky (was at 74%/4.7GB as of this
-  update; check `ollama list`, and re-run `ollama pull
-  qwen2.5:7b-instruct-q4_K_M` in the background if it's still missing).
-  `qwen2.5:3b-instruct` and `nemotron-mini` are available locally as
-  lighter fallbacks. **`.env` is currently pinned to
-  `qwen2.5:3b-instruct`** as a temporary stand-in — switch `OLLAMA_MODEL`
-  (and set a real `OLLAMA_FALLBACK_MODEL`) back to the pinned model once
-  it's actually pulled. Note: Phases 5+ (payments, reports) don't call
-  the LLM at all — only triage does — so this has had zero effect on
-  functionality, just quality of the department classification.
+  model) has been re-attempted across two sessions and was at 93%/4.7GB
+  as of this update, still running in the background — check `ollama
+  list`; if it's still missing, re-run `ollama pull
+  qwen2.5:7b-instruct-q4_K_M`. `qwen2.5:3b-instruct` and `nemotron-mini`
+  are available locally as lighter fallbacks. **`.env` is currently
+  pinned to `qwen2.5:3b-instruct`** — switch `OLLAMA_MODEL` (and set a
+  real `OLLAMA_FALLBACK_MODEL`) back to the pinned model once it's
+  actually pulled. Note: only triage calls the LLM at all in this whole
+  app (Phases 5+ are pure DB/deterministic logic), so this has had zero
+  effect on functionality — just department-classification quality.
 - Node v24.16.0, git 2.54.0 available. Docker 29.7.2 + Compose v5.4.0
   available but **still not tested end-to-end** — Dockerfiles exist for
   backend/frontend, non-Docker path is what's actually verified.
 - `.env` exists locally (gitignored, not committed) — copied from
-  `.env.example`. A fresh session/machine needs to re-copy it, and this
-  session added new keys (`APP_BASE_URL`, `SMTP_ENABLED`) — diff against
+  `.env.example`. A fresh session/machine needs to re-copy it; this
+  session added `APP_BASE_URL` and `SMTP_ENABLED` keys — diff against
   `.env.example` if picking up an old `.env`.
-- Dev servers: backend uvicorn is typically left running across sessions
-  on :8000 (this session restarted it with `--reload` so future edits
-  apply live — previous sessions started it without `--reload`, so check
-  before assuming code changes are picked up). Frontend (:5173) is not
-  currently running — start with `npm run dev` in `frontend/` if needed.
+- **`uvicorn --reload` hung mid-reload this session** (one file changed,
+  logged "Reloading...", then never restarted — kept serving stale code
+  indefinitely with no error). Cost some debugging time before it was
+  noticed (routes returned generic 404s instead of the app's actual
+  responses). Killed both the reloader and worker PIDs and started a
+  **plain `uvicorn app.main:app --port 8000` without `--reload`**
+  instead. If you use `--reload` next session, verify routes actually
+  changed after an edit (curl something route-specific) rather than
+  trusting the log alone — don't assume it silently worked.
+- Dev servers as of this update: backend uvicorn on :8000 (no
+  `--reload`, see above — restart manually after further code changes).
+  Frontend (:5173) is **not currently running** — `npm run dev` in
+  `frontend/` if you want it up.
 
 ### What's built (Phases 0-3)
 
@@ -169,9 +178,77 @@ the pytest suite matters even in a fast-moving MVP.
   transcript: greet → symptom → pick slot → pay (mock) → reconcile →
   confirmed. Re-runnable (closes any prior active session for its demo
   phone number first). This is the smoke test for the full booking+pay
-  loop; Phase 6 will extend it further.
+  loop; Phase 6 extended it further (see below).
 
-Next up: Phase 6 — Report generation + delivery.
+### What's built (Phase 6)
+
+- **`app/services/appointments.py`**: `complete_visit(db, appointment_id,
+  notes)` — flips a `confirmed` appointment to `completed` with notes
+  attached. Validates the appointment was actually `confirmed` first.
+- **`app/agents/report_agent.py`**: `generate_report` renders a one-page
+  PDF (reportlab `canvas`, not the heavier `platypus` layout engine — not
+  needed for one fixed-field page) to
+  `storage/reports/appointment_{id}_report.pdf` and creates/updates the
+  Report row. `find_undelivered_report(db, patient_id)` — most recent
+  generated-but-`consent_at is None` report for a patient; used by both
+  the proactive ask and the reactive "send my report" re-ask path.
+- **`app/agents/report_delivery_agent.py`**: `consent_question`,
+  `decline_message`, `unclear_answer_message` (text builders) and
+  `deliver_report` (records `consent_at`/`delivered_at`/
+  `delivery_channel=chat`, builds the `/reports/{id}/download` link,
+  attempts an optional email via `app/services/email.py` if
+  `SMTP_ENABLED=true` and the patient has an email on file — wrapped in
+  try/except so a broken SMTP config never blocks chat delivery, which
+  already succeeded by that point). **Email path is unverified** — no
+  SMTP account was configured; same honesty caveat as the Razorpay
+  provider in Phase 5.
+- **`app/doctor_cli.py`** (new, crude-but-real internal tool): lists
+  `confirmed` appointments, takes notes, calls `complete_visit` +
+  `generate_report`, then persists the consent question + an
+  `awaiting_report_consent` state flag via
+  `notifications.queue_message_for_patient` (same Phase 5 pattern), and
+  best-effort pings a new internal endpoint (below) to live-push it if
+  the patient's channel happens to be open right now.
+- **`app/channels/internal.py`** (new): `POST
+  /internal/push-live/{patient_id}` — lets a separate-process tool
+  (doctor_cli) ask the running FastAPI process to do the live websocket
+  push on its behalf, since an in-memory registry only exists within one
+  process. No auth — local-prototype internal tool only.
+- **`app/channels/reports_web.py`** (new): `GET /reports/{id}/download`
+  — serves the PDF, 404s unless `consent_at` is set. Manually verified
+  the gate: 404 before consent, still 404 after an explicit decline, 200
+  once consent is given (including via the keyword re-ask path).
+- **Orchestrator**: two new nodes (`report_consent_ask_node`,
+  `report_consent_answer_node`) and a state field
+  (`awaiting_report_consent: {"report_id": int} | None`). The router
+  (`_make_router`, now a db-bound closure — was a plain function before,
+  since the report-keyword check needs a DB query) checks, in priority
+  order: emergency → `awaiting_report_consent` set → "my report"-style
+  keyword match with an actual undelivered report on file → normal
+  `stage`-based routing. This means the consent Q&A is fully orthogonal
+  to whatever `stage` a patient was already in (mid-booking, done,
+  whatever) — it doesn't touch `stage` at all, so the original flow
+  resumes untouched once consent is resolved.
+- **`app/services/report_requests.py`** (new): deterministic keyword
+  match for "send my report" style messages — same rationale as
+  `emergency.py` (narrow, safety/UX-adjacent-enough intent, a keyword
+  list is more predictable than asking the local LLM).
+- **8 new pytest tests** (31 total, all passing): PDF generation +
+  idempotent re-run, `find_undelivered_report` filtering, and the full
+  consent flow (yes/no/unclear/keyword-re-ask/no-false-positive-without-
+  a-report) driven through the real `run_turn()` orchestrator.
+- **Manually verified end-to-end twice** against the running server and
+  real seeded patients: book → pay → `doctor_cli` completes visit →
+  consent asked in chat → PDF downloaded and inspected (correct patient/
+  doctor/department/notes) — and separately, the decline → still-gated
+  → keyword re-ask → accept → download cycle.
+- **`scripts/demo_walkthrough.py`** extended to run the complete loop
+  non-interactively (book → pay → doctor completes visit → consent →
+  deliver), confirmed re-runnable.
+
+Next up: Phase 7 — WhatsApp gateway (Baileys). No auth/JWT system exists
+yet (see deviations) — if Phase 9's admin dashboard becomes the next
+priority instead, that's the point auth will actually need to get built.
 
 ---
 
@@ -368,3 +445,28 @@ own smoke test.
   *should* work without touching `payments_agent.py`, but smoke-test it
   before trusting it — see the docstring in
   `app/services/payment_providers/razorpay.py`.
+- **Doctor visit-completion is a CLI script (`doctor_cli.py`), not an
+  authenticated endpoint** — the brief offered both options explicitly.
+  No JWT/login flow exists anywhere in the app yet (Phase 0-6 never
+  needed one), and standing up real auth just to gate this one action
+  felt like doing Phase 9's work early, badly. If Phase 9 (admin
+  dashboard) lands before this gets revisited, build real auth there and
+  retrofit this endpoint at the same time rather than inventing a
+  separate half-auth scheme now.
+- **Email delivery (`app/services/email.py`) is implemented but
+  unverified** — same situation as Razorpay: no SMTP account was
+  configured. `SMTP_ENABLED` defaults to `false` and nothing else in the
+  app depends on this path.
+- **Report consent-ask CAN live-push on the proactive first ask, but only
+  via an extra hop.** Unlike a payment (which resolves via an HTTP call
+  the FastAPI process itself handles, so it can push directly), a doctor
+  completing a visit happens in `doctor_cli.py` — a separate process with
+  no access to the in-memory websocket registry. `doctor_cli.py` persists
+  the question to the DB directly (guaranteed, works standalone) and then
+  best-effort pings `POST /internal/push-live/{patient_id}` (new this
+  phase — see `app/channels/internal.py`) so the *running server*, which
+  does have registry access, can do the actual push. If the server isn't
+  reachable when doctor_cli runs, this silently degrades to "patient sees
+  it on their next message" — never a hard failure. The keyword-triggered
+  re-ask doesn't need any of this, since it's answered synchronously
+  within whatever request/turn triggered it.

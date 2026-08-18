@@ -22,6 +22,8 @@ Graph shape:
                                +-> triage_node -> scheduling_assign_node -> END
                                +-> slot_choice_node -> END
                                +-> awaiting_payment_node -> END
+                               +-> report_consent_ask_node -> END
+                               +-> report_consent_answer_node -> END
                                +-> done_node -> END
 
 Async external events (a payment completing out-of-band on the mock/real
@@ -30,8 +32,13 @@ doctor_cli.py) follow one pattern throughout this codebase: persist the
 outcome to the DB and, if the channel is live, push a message immediately
 (app/services/notifications.py); *also* leave enough state that the next
 time this graph runs for that patient, it reconciles from the DB rather
-than trusting only the push arrived. `awaiting_payment_node` below is the
-first example of that reconciliation half.
+than trusting only the push arrived. `awaiting_payment_node` is the first
+example of that reconciliation half; `report_consent_ask_node` /
+`report_consent_answer_node` are the second — a doctor completing a visit
+(app/doctor_cli.py, always a separate process, never live-connected)
+persists the consent question + an `awaiting_report_consent` flag
+directly, and the *next* message the patient sends anywhere gets routed
+into the answer node by the router below, regardless of `stage`.
 """
 
 import logging
@@ -42,6 +49,8 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
 from app.agents.payments_agent import create_payment_link
+from app.agents.report_agent import find_undelivered_report
+from app.agents.report_delivery_agent import consent_question, decline_message, deliver_report, unclear_answer_message
 from app.agents.scheduling_agent import (
     assign_doctor,
     confirm_booking,
@@ -51,12 +60,15 @@ from app.agents.scheduling_agent import (
 )
 from app.agents.triage_agent import classify_department
 from app.llm.ollama_client import OllamaClient
-from app.models import Appointment, Patient, PaymentStatus
+from app.models import Appointment, Patient, PaymentStatus, Report
 from app.services.audit import log_action
 from app.services.emergency import detect_emergency
-from app.services.patients import get_patient_by_phone
+from app.services.report_requests import mentions_report_request
 
 logger = logging.getLogger(__name__)
+
+_YES_WORDS = {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "please", "yes please"}
+_NO_WORDS = {"no", "n", "nope", "not now", "no thanks", "not yet"}
 
 
 class ConversationState(TypedDict, total=False):
@@ -79,6 +91,8 @@ class ConversationState(TypedDict, total=False):
 
     payment_reference: str
     payment_checkout_url: str
+
+    awaiting_report_consent: dict | None  # {"report_id": int} while a consent question is outstanding
 
     is_emergency: bool
 
@@ -281,6 +295,37 @@ def _make_awaiting_payment_node(db: Session):
     return node
 
 
+def _make_report_consent_ask_node(db: Session):
+    def node(state: ConversationState) -> dict:
+        report = find_undelivered_report(db, state["patient_id"])
+        if report is None:
+            # Shouldn't happen (the router only sends us here when one
+            # exists), but stay safe rather than crash the turn.
+            return {"reply": "I don't see a report waiting for you right now."}
+        return {
+            "awaiting_report_consent": {"report_id": report.id},
+            "reply": consent_question(report),
+        }
+
+    return node
+
+
+def _make_report_consent_answer_node(db: Session):
+    def node(state: ConversationState) -> dict:
+        info = state["awaiting_report_consent"]
+        report = db.get(Report, info["report_id"])
+        answer = state["user_input"].strip().lower()
+
+        if answer in _YES_WORDS:
+            reply = deliver_report(db, report)
+            return {"reply": reply, "awaiting_report_consent": None}
+        if answer in _NO_WORDS:
+            return {"reply": decline_message(), "awaiting_report_consent": None}
+        return {"reply": unclear_answer_message()}
+
+    return node
+
+
 def _done_node(state: ConversationState) -> dict:
     return {"reply": "You're all set - is there anything else I can help you with?"}
 
@@ -288,17 +333,26 @@ def _done_node(state: ConversationState) -> dict:
 # --- Graph construction --------------------------------------------------
 
 
-def _route_after_emergency_check(state: ConversationState) -> str:
-    if state.get("is_emergency"):
-        return "emergency"
-    return {
-        "collect_name": "identify",
-        "collect_symptom": "triage",
-        "choose_slot": "slot_choice",
-        "await_payment": "awaiting_payment",
-        "done": "done",
-        "emergency": "emergency",
-    }.get(state["stage"], "identify")
+def _make_router(db: Session):
+    def route(state: ConversationState) -> str:
+        if state.get("is_emergency"):
+            return "emergency"
+        if state.get("awaiting_report_consent"):
+            return "report_consent_answer"
+        if mentions_report_request(state.get("user_input", "")) and find_undelivered_report(
+            db, state["patient_id"]
+        ):
+            return "report_consent_ask"
+        return {
+            "collect_name": "identify",
+            "collect_symptom": "triage",
+            "choose_slot": "slot_choice",
+            "await_payment": "awaiting_payment",
+            "done": "done",
+            "emergency": "emergency",
+        }.get(state["stage"], "identify")
+
+    return route
 
 
 def build_graph(db: Session, llm: OllamaClient | None = None):
@@ -312,18 +366,22 @@ def build_graph(db: Session, llm: OllamaClient | None = None):
     graph.add_node("scheduling_assign_node", _make_scheduling_assign_node(db))
     graph.add_node("slot_choice_node", _make_slot_choice_node(db))
     graph.add_node("awaiting_payment_node", _make_awaiting_payment_node(db))
+    graph.add_node("report_consent_ask_node", _make_report_consent_ask_node(db))
+    graph.add_node("report_consent_answer_node", _make_report_consent_answer_node(db))
     graph.add_node("done_node", _done_node)
 
     graph.add_edge(START, "emergency_check")
     graph.add_conditional_edges(
         "emergency_check",
-        _route_after_emergency_check,
+        _make_router(db),
         {
             "emergency": "emergency_node",
             "identify": "identify_node",
             "triage": "triage_node",
             "slot_choice": "slot_choice_node",
             "awaiting_payment": "awaiting_payment_node",
+            "report_consent_ask": "report_consent_ask_node",
+            "report_consent_answer": "report_consent_answer_node",
             "done": "done_node",
         },
     )
@@ -333,6 +391,8 @@ def build_graph(db: Session, llm: OllamaClient | None = None):
     graph.add_edge("scheduling_assign_node", END)
     graph.add_edge("slot_choice_node", END)
     graph.add_edge("awaiting_payment_node", END)
+    graph.add_edge("report_consent_ask_node", END)
+    graph.add_edge("report_consent_answer_node", END)
     graph.add_edge("done_node", END)
 
     return graph.compile()
