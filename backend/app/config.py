@@ -31,8 +31,13 @@ class Settings(BaseSettings):
     mock_payments: bool = True
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
+    # Used to build the local mock checkout link (http://<host>/pay/<ref>)
+    # sent to patients in chat. Only relevant when mock_payments=True.
+    app_base_url: str = "http://localhost:8000"
 
-    # Email
+    # Email (optional, never required — reports/confirmations always work
+    # via chat; email is an additional delivery path, off by default)
+    smtp_enabled: bool = False
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""

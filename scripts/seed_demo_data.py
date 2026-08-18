@@ -28,7 +28,7 @@ DEPARTMENTS = [
     ("ENT", "Ear, nose, and throat."),
 ]
 
-# (name, specialty, department, weekday availability list of (day_of_week, start, end))
+# (name, specialty, department, weekday availability list of (day_of_week, start, end), consultation_fee)
 # day_of_week: 0=Mon .. 6=Sun
 DOCTORS = [
     (
@@ -36,42 +36,49 @@ DOCTORS = [
         "General Physician",
         "General Medicine",
         [(0, time(9, 0), time(13, 0)), (2, time(9, 0), time(13, 0)), (4, time(9, 0), time(13, 0))],
+        400.00,
     ),
     (
         "Dr. Vikram Shah",
         "General Physician",
         "General Medicine",
         [(1, time(14, 0), time(18, 0)), (3, time(14, 0), time(18, 0)), (5, time(9, 0), time(12, 0))],
+        400.00,
     ),
     (
         "Dr. Priya Nair",
         "Cardiologist",
         "Cardiology",
         [(0, time(10, 0), time(14, 0)), (3, time(10, 0), time(14, 0))],
+        800.00,
     ),
     (
         "Dr. Rohan Mehta",
         "Pediatrician",
         "Pediatrics",
         [(1, time(9, 0), time(13, 0)), (2, time(9, 0), time(13, 0)), (4, time(9, 0), time(13, 0))],
+        450.00,
     ),
     (
         "Dr. Kavita Iyer",
         "Orthopedic Surgeon",
         "Orthopedics",
         [(0, time(15, 0), time(18, 0)), (4, time(15, 0), time(18, 0))],
+        700.00,
     ),
     (
         "Dr. Sameer Khan",
         "Dermatologist",
         "Dermatology",
         [(2, time(14, 0), time(17, 0)), (5, time(10, 0), time(13, 0))],
+        600.00,
     ),
     (
         "Dr. Neha Desai",
         "ENT Specialist",
         "ENT",
         [(1, time(10, 0), time(13, 0)), (3, time(15, 0), time(18, 0))],
+        550.00,
     ),
 ]
 
@@ -97,13 +104,14 @@ def seed() -> None:
                 print(f"+ department: {name}")
             dept_by_name[name] = dept
 
-        for full_name, specialty, dept_name, availability in DOCTORS:
+        for full_name, specialty, dept_name, availability, fee in DOCTORS:
             doctor = db.query(Doctor).filter_by(full_name=full_name).one_or_none()
             if doctor is None:
                 doctor = Doctor(
                     full_name=full_name,
                     specialty=specialty,
                     department_id=dept_by_name[dept_name].id,
+                    consultation_fee=fee,
                 )
                 db.add(doctor)
                 db.flush()

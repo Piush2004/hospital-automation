@@ -10,6 +10,7 @@ class UserRole(str, enum.Enum):
 
 class AppointmentStatus(str, enum.Enum):
     requested = "requested"
+    pending_payment = "pending_payment"
     confirmed = "confirmed"
     cancelled = "cancelled"
     completed = "completed"

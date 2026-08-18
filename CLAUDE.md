@@ -6,12 +6,12 @@ sessions. **Read this first in any new session.** Update the "Status" and
 
 ---
 
-## STATUS (updated 2026-08-18)
+## STATUS (updated 2026-08-18, session 2)
 
-**Phases 0-4 done — this session's target reached.** A real text
-conversation (browser chat widget or CLI) can triage a symptom, assign a
-doctor, and book a real appointment against the local DB, fully offline.
-Phase 5 (payments) is next.
+**Phases 0-5 done.** A real text conversation (browser chat widget or
+CLI) can triage a symptom, assign a doctor, book a real appointment, and
+now pay for it (mock checkout by default) — end to end, fully offline.
+Phase 6 (reports) is next.
 
 Environment discovered on this machine:
 - Python 3.14.5 is the system default, but LangGraph/SQLAlchemy/etc. are
@@ -21,18 +21,29 @@ Environment discovered on this machine:
   python/uvicorn/alembic directly (`.venv/Scripts/...` on Windows) rather
   than relying on `python`/`pip` on PATH.
 - Ollama is installed (v0.32.6). `qwen2.5:7b-instruct-q4_K_M` (the pinned
-  model) was being pulled in the background as of this update — check
-  `ollama list`. `qwen2.5:3b-instruct` and `nemotron-mini` are also
-  available locally as lighter fallbacks. **`.env` is currently pinned to
-  `qwen2.5:3b-instruct`** as a temporary stand-in while the 7b model
-  downloaded (slow connection, ~30 min pull) — switch `OLLAMA_MODEL` (and
-  set a real `OLLAMA_FALLBACK_MODEL`, e.g. `llama3.1:8b-instruct-q4_K_M`
-  if you pull it) back to the pinned model once available, and remove the
-  temporary note comment above it in `.env`.
-- Node v24.16.0, git 2.54.0 available.
-- No Docker verified yet — docker-compose.yml is a stub, not yet tested.
+  model) has been re-attempted twice across two sessions and still hasn't
+  finished — connection is slow/flaky (was at 74%/4.7GB as of this
+  update; check `ollama list`, and re-run `ollama pull
+  qwen2.5:7b-instruct-q4_K_M` in the background if it's still missing).
+  `qwen2.5:3b-instruct` and `nemotron-mini` are available locally as
+  lighter fallbacks. **`.env` is currently pinned to
+  `qwen2.5:3b-instruct`** as a temporary stand-in — switch `OLLAMA_MODEL`
+  (and set a real `OLLAMA_FALLBACK_MODEL`) back to the pinned model once
+  it's actually pulled. Note: Phases 5+ (payments, reports) don't call
+  the LLM at all — only triage does — so this has had zero effect on
+  functionality, just quality of the department classification.
+- Node v24.16.0, git 2.54.0 available. Docker 29.7.2 + Compose v5.4.0
+  available but **still not tested end-to-end** — Dockerfiles exist for
+  backend/frontend, non-Docker path is what's actually verified.
 - `.env` exists locally (gitignored, not committed) — copied from
-  `.env.example`. A fresh session/machine needs to re-copy it.
+  `.env.example`. A fresh session/machine needs to re-copy it, and this
+  session added new keys (`APP_BASE_URL`, `SMTP_ENABLED`) — diff against
+  `.env.example` if picking up an old `.env`.
+- Dev servers: backend uvicorn is typically left running across sessions
+  on :8000 (this session restarted it with `--reload` so future edits
+  apply live — previous sessions started it without `--reload`, so check
+  before assuming code changes are picked up). Frontend (:5173) is not
+  currently running — start with `npm run dev` in `frontend/` if needed.
 
 ### What's built (Phases 0-3)
 
@@ -107,12 +118,60 @@ the pytest suite matters even in a fast-moving MVP.
   frontend) — **not yet tested end-to-end via `docker compose up`**; the
   non-Docker path is what's actually been verified this session.
 
-Dev servers were left running at the end of this session for a quick
-first look: backend on :8000, frontend on :5173. Restart per README if
-they're no longer up.
+### What's built (Phase 5)
 
-Next up: Phase 5 — Payments agent (mock-mode first, then Razorpay
-test-mode keys behind the same interface).
+- **Schema**: `AppointmentStatus.pending_payment` (new — booking now lands
+  here, not `confirmed`, until payment succeeds). `Doctor.consultation_fee`
+  (Numeric, seeded with varied per-doctor values — see
+  `scripts/seed_demo_data.py`). Migration
+  `24f96d68ea32_add_consultation_fee_and_pending_.py` — autogenerate
+  handled the SQLite CHECK-constraint change via batch mode correctly
+  this time (Phase 1's migration was hand-written; this one didn't need
+  to be). `pending_payment` counts as an "active" status for slot-exclusion
+  purposes (`services/doctors.ACTIVE_STATUSES`) so a second patient can't
+  grab a slot someone's mid-checkout on.
+- **`app/services/payment_providers/`** — the two-backend split:
+  `base.py` (ABC: `create_payment_link`, `check_status`), `mock.py` (zero
+  network, builds a link to our own `/pay/{reference}` page), `razorpay.py`
+  (Payment Links API — **written but unverified, no test Razorpay account
+  was available**; the mock path is what's actually been exercised).
+- **`app/agents/payments_agent.py`** — `create_payment_link` /
+  `confirm_payment`, matching the interface named in the brief. One
+  Payment row per Appointment (schema's `unique=True` on
+  `appointment_id`); a failed attempt is retried by regenerating the link
+  on the same row, not inserting a new one.
+- **`app/channels/payments_web.py`** — `GET /pay/{reference}` (mock
+  checkout HTML, Paid/Failed buttons) and `POST /pay/{reference}/complete`.
+  Only ever serves `provider == "mock"` payments — a real Razorpay link
+  points at Razorpay's own hosted checkout instead.
+- **Async notification pattern** (new, will be reused by Phase 6's report
+  delivery): `app/services/live_connections.py` is an in-memory
+  `(channel, external_id) -> websocket` registry, populated by
+  `web_chat.py` on connect/disconnect. `app/services/notifications.py`
+  splits into a sync DB-persistence half (`queue_message_for_patient` —
+  safe to call from anywhere, including standalone scripts) and an async
+  `push_live` half (only meaningful inside the FastAPI process). The
+  orchestrator's `awaiting_payment_node` is the reconciliation
+  counterpart: even if the live push is missed (patient reconnected on a
+  different connection, etc.), the *next* message they send re-checks the
+  DB and catches up. This same pattern is what Phase 6's report-ready
+  notification will reuse.
+- **Verified**: pytest (5 new payments_agent tests + updated orchestrator
+  tests covering the paid and failed paths, 23 total, all passing);
+  manually via curl against the mock checkout page; and — the one that
+  actually proves the async design — a `websockets` test script that
+  keeps a chat connection open, completes payment via a *separate* HTTP
+  call, and confirms the confirmation message arrives on the open
+  socket with no user input. Also verified the failure→retry path the
+  same way (failed payment pushes a message live, next chat message gets
+  a fresh link).
+- **`scripts/demo_walkthrough.py`** (new) — scripted, non-interactive
+  transcript: greet → symptom → pick slot → pay (mock) → reconcile →
+  confirmed. Re-runnable (closes any prior active session for its demo
+  phone number first). This is the smoke test for the full booking+pay
+  loop; Phase 6 will extend it further.
+
+Next up: Phase 6 — Report generation + delivery.
 
 ---
 
@@ -291,3 +350,21 @@ own smoke test.
   based — intentional, not a fallback-of-convenience. See the docstring
   in `app/services/emergency.py`: a safety-critical gate shouldn't depend
   on a small local model's occasional miss.
+- **CLI REPL doesn't get live payment-confirmation push, by design, not
+  oversight.** `payments_web.py`'s live-push (via `live_connections.py`)
+  only works within the FastAPI process — the CLI REPL is a separate
+  Python process with its own memory, so an in-memory registry can't
+  reach it. The DB persistence + `awaiting_payment_node` reconciliation
+  path still works correctly for CLI sessions; they just find out on
+  their *next* message instead of instantly. Real channels (web chat now,
+  WhatsApp/voice later) all run inside the same FastAPI process as the
+  payment webhook, so they get the live push. This is why
+  `demo_walkthrough.py` explicitly sends one more turn after simulating
+  payment, instead of asserting an unprompted push arrived.
+- **Razorpay provider is implemented but unverified** — no test-mode
+  Razorpay account was available while building this. The interface
+  (`create_payment_link`/`check_status`) matches the mock provider
+  exactly, so switching `MOCK_PAYMENTS=false` with real test keys
+  *should* work without touching `payments_agent.py`, but smoke-test it
+  before trusting it — see the docstring in
+  `app/services/payment_providers/razorpay.py`.

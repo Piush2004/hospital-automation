@@ -75,13 +75,20 @@ def book_appointment(
     slot_start: datetime,
     slot_end: datetime,
     reason: str | None = None,
+    status: AppointmentStatus = AppointmentStatus.pending_payment,
 ) -> Appointment:
+    """Creates the appointment. Status defaults to `pending_payment` — the
+    booking isn't `confirmed` until payments_agent.confirm_payment() flips
+    it (see app/agents/payments_agent.py). Slot-exclusion treats
+    pending_payment as active (see doctors.ACTIVE_STATUSES) so a second
+    patient can't grab the same slot while payment is outstanding.
+    """
     appointment = Appointment(
         patient_id=patient_id,
         doctor_id=doctor_id,
         slot_start=slot_start,
         slot_end=slot_end,
-        status=AppointmentStatus.confirmed,
+        status=status,
         reason=reason,
     )
     db.add(appointment)

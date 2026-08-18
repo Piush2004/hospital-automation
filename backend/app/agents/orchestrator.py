@@ -21,7 +21,17 @@ Graph shape:
                                +-> identify_node -> END
                                +-> triage_node -> scheduling_assign_node -> END
                                +-> slot_choice_node -> END
+                               +-> awaiting_payment_node -> END
                                +-> done_node -> END
+
+Async external events (a payment completing out-of-band on the mock/real
+checkout page, a doctor finishing a visit — see payments_web.py and
+doctor_cli.py) follow one pattern throughout this codebase: persist the
+outcome to the DB and, if the channel is live, push a message immediately
+(app/services/notifications.py); *also* leave enough state that the next
+time this graph runs for that patient, it reconciles from the DB rather
+than trusting only the push arrived. `awaiting_payment_node` below is the
+first example of that reconciliation half.
 """
 
 import logging
@@ -31,6 +41,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
+from app.agents.payments_agent import create_payment_link
 from app.agents.scheduling_agent import (
     assign_doctor,
     confirm_booking,
@@ -40,7 +51,7 @@ from app.agents.scheduling_agent import (
 )
 from app.agents.triage_agent import classify_department
 from app.llm.ollama_client import OllamaClient
-from app.models import Patient
+from app.models import Appointment, Patient, PaymentStatus
 from app.services.audit import log_action
 from app.services.emergency import detect_emergency
 from app.services.patients import get_patient_by_phone
@@ -65,6 +76,9 @@ class ConversationState(TypedDict, total=False):
     candidate_slots: list[list[str]]  # [[iso_start, iso_end], ...]
     chosen_slot: list[str]
     appointment_id: int
+
+    payment_reference: str
+    payment_checkout_url: str
 
     is_emergency: bool
 
@@ -211,24 +225,64 @@ def _make_slot_choice_node(db: Session):
         doctor = db.get(Doctor, doctor_id)
         appointment = confirm_booking(db, patient, doctor, choice, reason=state.get("symptom_text"))
 
+        payment, link = create_payment_link(db, appointment)
+
         slot_start, _slot_end = choice
         reply = (
-            f"You're booked with {doctor.full_name} on "
-            f"{slot_start.strftime('%A %d %B, %H:%M')} UTC. "
-            "You'll see this appointment in your history. Anything else I can help with?"
+            f"You're provisionally booked with {doctor.full_name} on "
+            f"{slot_start.strftime('%A %d %B, %H:%M')} UTC. To confirm, please pay "
+            f"{payment.currency} {payment.amount}: {link.checkout_url}\n{link.instructions}"
         )
         return {
             "chosen_slot": [choice[0].isoformat(), choice[1].isoformat()],
             "appointment_id": appointment.id,
+            "payment_reference": link.reference,
+            "payment_checkout_url": link.checkout_url,
             "reply": reply,
-            "stage": "done",
+            "stage": "await_payment",
+        }
+
+    return node
+
+
+def _make_awaiting_payment_node(db: Session):
+    def node(state: ConversationState) -> dict:
+        appointment = db.get(Appointment, state["appointment_id"])
+        payment = appointment.payment
+
+        if payment.status == PaymentStatus.paid:
+            return {
+                "reply": (
+                    f"You're already confirmed with {appointment.doctor.full_name} on "
+                    f"{appointment.slot_start.strftime('%A %d %B, %H:%M')} UTC. "
+                    "Anything else I can help with?"
+                ),
+                "stage": "done",
+            }
+
+        if payment.status == PaymentStatus.failed:
+            _payment, link = create_payment_link(db, appointment)
+            return {
+                "payment_reference": link.reference,
+                "payment_checkout_url": link.checkout_url,
+                "reply": (
+                    f"That payment didn't go through. Here's a fresh link: {link.checkout_url}\n"
+                    f"{link.instructions}"
+                ),
+                "stage": "await_payment",
+            }
+
+        checkout_url = state.get("payment_checkout_url", "")
+        return {
+            "reply": f"Still waiting on payment. Use this link when you're ready: {checkout_url}",
+            "stage": "await_payment",
         }
 
     return node
 
 
 def _done_node(state: ConversationState) -> dict:
-    return {"reply": "You're all set — is there anything else I can help you with?"}
+    return {"reply": "You're all set - is there anything else I can help you with?"}
 
 
 # --- Graph construction --------------------------------------------------
@@ -241,6 +295,7 @@ def _route_after_emergency_check(state: ConversationState) -> str:
         "collect_name": "identify",
         "collect_symptom": "triage",
         "choose_slot": "slot_choice",
+        "await_payment": "awaiting_payment",
         "done": "done",
         "emergency": "emergency",
     }.get(state["stage"], "identify")
@@ -256,6 +311,7 @@ def build_graph(db: Session, llm: OllamaClient | None = None):
     graph.add_node("triage_node", _make_triage_node(db, llm))
     graph.add_node("scheduling_assign_node", _make_scheduling_assign_node(db))
     graph.add_node("slot_choice_node", _make_slot_choice_node(db))
+    graph.add_node("awaiting_payment_node", _make_awaiting_payment_node(db))
     graph.add_node("done_node", _done_node)
 
     graph.add_edge(START, "emergency_check")
@@ -267,6 +323,7 @@ def build_graph(db: Session, llm: OllamaClient | None = None):
             "identify": "identify_node",
             "triage": "triage_node",
             "slot_choice": "slot_choice_node",
+            "awaiting_payment": "awaiting_payment_node",
             "done": "done_node",
         },
     )
@@ -275,6 +332,7 @@ def build_graph(db: Session, llm: OllamaClient | None = None):
     graph.add_edge("triage_node", "scheduling_assign_node")
     graph.add_edge("scheduling_assign_node", END)
     graph.add_edge("slot_choice_node", END)
+    graph.add_edge("awaiting_payment_node", END)
     graph.add_edge("done_node", END)
 
     return graph.compile()

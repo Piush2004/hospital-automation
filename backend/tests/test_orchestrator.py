@@ -1,7 +1,8 @@
 from datetime import time
 
 from app.agents.orchestrator import initial_state, run_turn
-from app.models import Appointment, Department, Doctor, DoctorAvailability, Patient
+from app.agents.payments_agent import confirm_payment
+from app.models import Appointment, AppointmentStatus, Department, Doctor, DoctorAvailability, Patient, Payment
 
 
 class _StubLLM:
@@ -58,13 +59,50 @@ def test_full_conversation_books_appointment(db):
     assert "Dr. Test" in reply
 
     state, reply = run_turn(db, state, "1", llm=llm)
-    assert state["stage"] == "done"
+    assert state["stage"] == "await_payment"
     assert state["appointment_id"] is not None
-    assert "booked" in reply.lower()
+    assert "pay" in reply.lower()
+    assert state["payment_reference"]
 
     appt = db.get(Appointment, state["appointment_id"])
     assert appt.patient_id == patient.id
     assert appt.doctor_id == doctor.id
+    assert appt.status == AppointmentStatus.pending_payment
+
+    # Simulate the patient completing checkout on the (mock) payment page,
+    # out of band from the chat turn loop.
+    confirm_payment(db, state["payment_reference"], outcome="paid")
+    db.refresh(appt)
+    assert appt.status == AppointmentStatus.confirmed
+
+    # Next chat turn should reconcile from the DB and close out the flow.
+    state, reply = run_turn(db, state, "hello?", llm=llm)
+    assert state["stage"] == "done"
+    assert "confirmed" in reply.lower()
+
+
+def test_payment_failure_offers_retry_link(db):
+    doctor = _seed(db)
+    patient = Patient(full_name="Retry Pat", phone="+1003")
+    db.add(patient)
+    db.flush()
+
+    llm = _StubLLM()
+    state, _greeting = initial_state(patient)
+    state, _reply = run_turn(db, state, "skin rash", llm=llm)
+    state, _reply = run_turn(db, state, "1", llm=llm)
+    assert state["stage"] == "await_payment"
+    first_reference = state["payment_reference"]
+
+    confirm_payment(db, first_reference, outcome="failed")
+
+    payment = db.query(Payment).filter_by(appointment_id=state["appointment_id"]).one()
+    assert payment.status.value == "failed"
+
+    state, reply = run_turn(db, state, "hello?", llm=llm)
+    assert state["stage"] == "await_payment"
+    assert state["payment_reference"] != first_reference
+    assert "fresh link" in reply.lower()
 
 
 def test_emergency_short_circuits_flow(db):

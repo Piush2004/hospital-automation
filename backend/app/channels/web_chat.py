@@ -18,6 +18,7 @@ from app.agents.orchestrator import initial_state, run_turn
 from app.db import SessionLocal
 from app.llm.ollama_client import OllamaClient
 from app.models import ConversationChannel
+from app.services import live_connections
 from app.services.conversations import append_history, create_session, get_active_session, save_state
 from app.services.patients import get_or_create_patient
 
@@ -32,6 +33,7 @@ _llm = OllamaClient()
 @router.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket, phone: str = Query(...)) -> None:
     await websocket.accept()
+    live_connections.register(ConversationChannel.web_chat, phone, websocket)
     db = SessionLocal()
 
     try:
@@ -67,4 +69,5 @@ async def chat_ws(websocket: WebSocket, phone: str = Query(...)) -> None:
     except WebSocketDisconnect:
         logger.info("Chat websocket disconnected (phone=%s)", phone)
     finally:
+        live_connections.unregister(ConversationChannel.web_chat, phone)
         db.close()

@@ -1,6 +1,6 @@
 from datetime import time
 
-from sqlalchemy import ForeignKey, Integer, String, Text, Time
+from sqlalchemy import ForeignKey, Integer, Numeric, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -22,6 +22,7 @@ class Doctor(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     # simple load-balancing signal for triage: max concurrent active appointments
     max_daily_appointments: Mapped[int] = mapped_column(Integer, default=16, nullable=False)
+    consultation_fee: Mapped[float] = mapped_column(Numeric(10, 2), default=500.00, nullable=False)
 
     user: Mapped["User | None"] = relationship(back_populates="doctor")
     department: Mapped["Department"] = relationship(back_populates="doctors")

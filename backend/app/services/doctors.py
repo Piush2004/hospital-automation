@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Appointment, AppointmentStatus, Doctor
 
-ACTIVE_STATUSES = (AppointmentStatus.requested, AppointmentStatus.confirmed)
+ACTIVE_STATUSES = (AppointmentStatus.requested, AppointmentStatus.pending_payment, AppointmentStatus.confirmed)
 
 
 def list_doctors_by_department(db: Session, department_id: int) -> list[Doctor]:
