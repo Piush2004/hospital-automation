@@ -8,18 +8,18 @@ sessions. **Read this first in any new session.** Update the "Status" and
 
 ## STATUS (updated 2026-08-18, session 3)
 
-**Phases 0-7 done, plus a stress-test pass that found and fixed two real
-concurrency bugs** (see "Stress test findings" below — do this before
-trusting the app under any real concurrent load, it's not optional
-polish). A real text conversation (browser chat widget, CLI, or real
-WhatsApp) can triage a symptom, assign a doctor, book a real appointment,
-pay for it (mock checkout by default), have a doctor complete the visit
-with notes, ask the patient for consent, and deliver a generated PDF
-report in-chat — fully offline, end to end, over any of those three
-channels, and now verified safe under concurrent multi-patient load.
-Phase 8 (voice) is next, unless Phase 9 (admin dashboard) or real auth
-becomes the priority instead — see "Deviations" for why auth got
-deferred multiple times now.
+**Phases 0-8 done**, plus a stress-test pass earlier this session that
+found and fixed two real concurrency bugs (see "Stress test findings"
+below — do this before trusting the app under any real concurrent load,
+it's not optional polish). A real conversation — browser text chat,
+CLI, real WhatsApp, or now browser voice — can triage a symptom, assign
+a doctor, book a real appointment, pay for it (mock checkout by
+default), have a doctor complete the visit with notes, ask the patient
+for consent, and deliver a generated PDF report — fully offline, end to
+end, over any of those four channels, verified safe under concurrent
+multi-patient load. Phase 9 (admin dashboard) is the nominal next phase,
+but real auth is worth considering first — see "Deviations" for why it's
+been deferred multiple times now.
 
 ### Stress test findings (session 3) — fixed, re-verified
 
@@ -102,13 +102,14 @@ Environment discovered/changed this session:
   changed after an edit (curl something route-specific) rather than
   trusting the log alone.
 - Dev servers as of this update (session 3): **backend uvicorn and
-  frontend are both running** (:8000, :5173 — restarted fresh this
-  session, backend picked up the concurrency fixes above; no `--reload`
-  on the backend, restart manually after further code changes). The
-  WhatsApp gateway (:3001) is **stopped** — no real WhatsApp account has
-  been paired against this build yet, so `whatsapp-gateway/auth_info/` is
-  still empty and a fresh `npm start` will print a QR code needing a real
-  scan.
+  frontend are both running** (:8000, :5173). Backend is running
+  `uvicorn app.main:app --port 8000 --ws-max-size 20971520` — no
+  `--reload`, and note the `--ws-max-size` flag is now required for the
+  voice channel to work (see Phase 8 below); restart manually with that
+  flag after further code changes. The WhatsApp gateway (:3001) is
+  **stopped** — no real WhatsApp account has been paired against this
+  build yet, so `whatsapp-gateway/auth_info/` is still empty and a fresh
+  `npm start` will print a QR code needing a real scan.
 
 ### What's built (Phases 0-3)
 
@@ -375,11 +376,101 @@ the pytest suite matters even in a fast-moving MVP.
   pytest-unit-tested" note in Deviations below for why, consistent with
   how `web_chat.py` and `payments_web.py` were already handled.
 
-Next up: Phase 8 (voice) is the nominal next phase, but Phase 9 (admin
-dashboard) or building real auth might be higher-value first — no JWT/
-login system exists anywhere yet, and it's been deferred twice now (see
-Deviations). Worth explicitly asking the user which they'd rather have
-next rather than assuming the numeric phase order still matches priority.
+### What's built (Phase 8, session 3)
+
+- **Stack**: `faster-whisper` for STT (`ctranslate2`-based, no PyTorch
+  dependency), `piper-tts` for TTS (`onnxruntime`-based). Both resolved
+  cleanly with modest dependency trees — no heavy ML framework needed for
+  either. Default config: Whisper `base` model, CPU, `int8` compute type
+  (no CUDA toolkit version-matching required — reliable over fast, bump
+  `STT_DEVICE=cuda` in `.env` if you have a working ctranslate2 CUDA
+  setup); Piper voice `en_US-lessac-medium` (~60MB, downloaded once via
+  `python -m piper.download_voices`, cached in `storage/voices/`,
+  gitignored). Whisper's own model auto-downloads via `huggingface_hub`
+  on first use — no manual step needed for that half.
+- **`app/services/speech_to_text.py`** / **`text_to_speech.py`**: thin
+  wrappers, each with a module-level singleton model instance (loading
+  takes a few seconds, reused across calls — same pattern as
+  `OllamaClient` in `web_chat.py`). STT returns `""` for silence rather
+  than raising; TTS returns `b""` for empty text. `transcribe()` uses
+  `vad_filter=True` (voice activity detection) to reduce hallucinated
+  text on quiet/noisy segments — matters more for live mic input than it
+  would for clean uploaded audio.
+- **`app/agents/voice_agent.py`**: `process_voice_turn()` composes STT →
+  the *same* `run_turn()` orchestrator every other channel uses → TTS.
+  Returns the transcribed text separately from the reply, not just
+  folded into state — the channel surfaces "what was heard" back to the
+  UI, since STT errors are common and a voice UI silently misunderstanding
+  someone is worse than a text UI where they can see exactly what they
+  typed.
+- **`app/channels/voice_ws.py`**: `/ws/voice?phone=<phone>`, mirrors
+  `web_chat.py`'s structure closely (same `asyncio.to_thread` pattern for
+  blocking work, same session load/resume logic). Protocol: server sends
+  one JSON text frame per turn (`content`, `heard`, `stage`, `has_audio`)
+  immediately followed by a binary frame with the raw WAV reply, when
+  there is one. Client sends one binary frame per utterance (push-to-talk
+  — the complete recorded clip, whatever format `MediaRecorder` produced;
+  faster-whisper decodes via ffmpeg/`av` internally, no client-side
+  conversion needed).
+- **Real bug found and fixed via actual end-to-end testing**: sending
+  audio base64-embedded inside the JSON frame (the original design) hit
+  uvicorn's default 1MB websocket frame limit on any reply longer than
+  ~15 seconds spoken — the connection died with "message too big" on the
+  very first realistic multi-slot triage reply. Fixed two ways: (1)
+  switched to a separate binary frame for audio (removes base64's ~33%
+  overhead), (2) documented `--ws-max-size 20971520` as part of the
+  standard run command (README step 4) and baked it into
+  `backend/Dockerfile`'s CMD. This is exactly the same *category* of
+  lesson as the stress-test bugs earlier this session: a thing that looks
+  fine until you actually push real data through it end-to-end.
+- **Frontend**: `frontend/src/VoiceWidget.jsx` (new), a hold-to-talk
+  widget using `MediaRecorder`/`getUserMedia`, alongside `ChatWidget` via
+  a mode toggle in `App.jsx` (no router added — local `useState`, kept
+  it simple). Correlates each JSON metadata frame with the binary audio
+  frame that immediately follows it via a ref flag, plays audio through
+  a hidden `<audio>` element.
+- **Verification — read this before assuming voice "just works" end to
+  end**: the actual voice *agent* pipeline (STT → orchestrator → TTS) was
+  verified thoroughly and automatically, with no human needed: a test
+  script (`voice_ws_test.py`, written to the session scratchpad, not
+  committed — reproducible via the pattern in this note) used Piper
+  itself to synthesize realistic spoken utterances, sent them through the
+  real `/ws/voice` endpoint, and confirmed correct transcription (STT
+  reproduced "I have chronic back pain after lifting something heavy"
+  essentially verbatim), correct orchestrator behavior (triage → slot
+  list → booking, including a session-resume-after-reconnect case that
+  came up by accident and worked correctly), and correct large-reply
+  audio delivery (a 31-second, 1.37MB WAV reply transmitted successfully
+  after the frame-size fix). **What was *not* verified**: an actual human
+  speaking into an actual microphone through the browser UI. Attempted
+  this directly — clicking "Hold to talk" via browser automation
+  triggers Chrome's native `getUserMedia` permission prompt, which lives
+  outside the page's DOM and isn't reachable by coordinate-based
+  automation (confirmed by the tab hanging exactly when the prompt would
+  appear, then reloading on Escape, losing the session — not a bug, just
+  the boundary). This is the same category of limitation as Phase 7's
+  WhatsApp QR pairing: something only a human can complete. Grant mic
+  permission once in the browser and it should work; if it doesn't,
+  start debugging from `VoiceWidget.jsx`'s `startRecording()` (does
+  `getUserMedia` resolve? does `MediaRecorder` produce non-empty chunks?
+  does the `onstop` handler's blob actually reach `ws.send`?) rather than
+  assuming the backend is at fault — the backend half is the
+  thoroughly-verified half.
+- No new pytest tests this phase (same rationale as Phase 7's WhatsApp
+  webhook — `voice_ws.py` uses `SessionLocal()` directly like every other
+  channel adapter, and the real models are too heavy to load in a fast
+  unit-test suite). The verification that exists is the live end-to-end
+  test described above, not automated regression coverage — if
+  `speech_to_text.py`/`text_to_speech.py`/`voice_agent.py` change later,
+  re-run an equivalent live test rather than trusting pytest to catch a
+  regression here.
+
+Next up: Phase 9 (admin dashboard) is the nominal next phase, but
+building real auth might be worth doing first or alongside it — no JWT/
+login system exists anywhere yet, and it's been deferred multiple times
+now (see Deviations). Worth explicitly asking the user which they'd
+rather have next rather than assuming the numeric phase order still
+matches priority.
 
 ---
 
@@ -638,3 +729,13 @@ own smoke test.
   a resource with real contention (slots, but potentially other things
   later) needs to ask whether it needs the same DB-level constraint
   treatment `Appointment.__table_args__` got here.
+- **Voice's microphone permission is a human-only step, structurally
+  identical to Phase 7's WhatsApp QR pairing.** Confirmed by actually
+  attempting it via browser automation, not assumed: clicking "Hold to
+  talk" triggers Chrome's native `getUserMedia` prompt, which lives
+  outside the page DOM and isn't reachable by coordinate/ref-based
+  automation. Don't burn time trying to script around this again — grant
+  the permission once by hand and move on. The backend voice pipeline
+  itself (STT → orchestrator → TTS) is thoroughly verified independent
+  of this; see "What's built (Phase 8)" above for exactly what was and
+  wasn't tested.

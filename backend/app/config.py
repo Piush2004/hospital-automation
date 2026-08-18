@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     whatsapp_webhook_secret: str = "change-me"
     whatsapp_gateway_url: str = "http://localhost:3001"
 
+    # Voice (STT/TTS) — browser mic/speaker widget, not real telephony.
+    # "base"/"cpu"/"int8" is the safe-by-default combo: no CUDA toolkit
+    # version matching required, still fast enough for short utterances.
+    # Bump to a bigger Whisper model or device="cuda" if VRAM/accuracy
+    # needs justify it — see CLAUDE.md.
+    stt_model_size: str = "base"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    tts_voice: str = "en_US-lessac-medium"
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"
@@ -56,6 +66,12 @@ class Settings(BaseSettings):
     @property
     def reports_dir(self) -> Path:
         path = REPO_ROOT / "storage" / "reports"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def voices_dir(self) -> Path:
+        path = REPO_ROOT / "storage" / "voices"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

@@ -34,6 +34,28 @@ body {
   font-size: 0.9rem;
 }
 
+.mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mode-toggle button {
+  padding: 6px 14px;
+  border: 1px solid #ccc;
+  border-radius: 999px;
+  background: #fff;
+  color: #333;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.mode-toggle button.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: white;
+}
+
 .chat-shell {
   flex: 1;
   display: flex;
@@ -145,4 +167,43 @@ body {
   color: white;
   font-size: 1rem;
   cursor: pointer;
+}
+
+.mic-error {
+  margin: 0;
+  padding: 8px 16px;
+  color: #dc2626;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.voice-controls {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.mic-button {
+  padding: 16px 32px;
+  border: none;
+  border-radius: 999px;
+  background: #2563eb;
+  color: white;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.mic-button:disabled {
+  background: #93a5be;
+  cursor: default;
+}
+
+.mic-button.recording {
+  background: #dc2626;
+  transform: scale(1.04);
 }

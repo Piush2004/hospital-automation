@@ -23,7 +23,7 @@ progress status.
 | Agent orchestration | LangGraph (self-hosted, no LangSmith/cloud) |
 | Web chat | FastAPI WebSocket + React (Vite) widget |
 | WhatsApp | Baileys gateway (unofficial) → FastAPI webhook |
-| Voice (Phase 8) | faster-whisper + Ollama + Piper TTS, browser mic/speaker widget |
+| Voice | faster-whisper (STT) + Ollama (LLM) + Piper (TTS), browser mic/speaker widget |
 | Payments | Mock checkout by default, or Razorpay Test Mode (`MOCK_PAYMENTS=false`) |
 | Reports | reportlab → PDF under `./storage/reports/`, delivered only after in-chat consent |
 | Auth | JWT, roles: patient, doctor, front_desk, admin |
@@ -36,9 +36,13 @@ progress status.
   your primary one. Swap to the official Meta WhatsApp Cloud API (free
   tier, ~1000 conversations/mo, needs business verification) before any
   real deployment.
-- **Voice (Phase 8)** is a browser-based mic/speaker widget, not a real
-  phone call — there is no free way to place/receive actual PSTN calls.
-  A clean seam is left to plug in Twilio/Exotel later (that costs money).
+- **Voice** is a browser-based mic/speaker widget, not a real phone call —
+  there is no free way to place/receive actual PSTN calls. A clean seam
+  is left to plug in Twilio/Exotel later (that costs money). STT/TTS
+  default to CPU inference (`base` Whisper model, `int8`) for reliability
+  without CUDA version-matching headaches — bump `STT_DEVICE=cuda` in
+  `.env` if you've got a working ctranslate2 CUDA setup and want it
+  faster.
 - **Payments** run in Razorpay Test Mode / mock mode. No real money ever
   moves through this app as shipped.
 - **Emergency fast-path** is a prioritized alert in the admin dashboard,
@@ -93,8 +97,12 @@ python ../scripts/seed_demo_data.py
 ### 4. Run the API + web chat (Phase 4+)
 
 ```bash
-.venv/Scripts/uvicorn app.main:app --reload
+.venv/Scripts/uvicorn app.main:app --reload --ws-max-size 20971520
 ```
+
+`--ws-max-size` raises the default 1MB websocket frame limit — the voice
+channel's spoken replies (uncompressed WAV) can exceed it on longer
+responses. Harmless to include even if you're not using voice.
 
 Then open the frontend chat widget (Phase 4+):
 
@@ -142,6 +150,23 @@ cached in `whatsapp-gateway/auth_info/` (gitignored) so you only need to
 scan once. Once connected, message that WhatsApp number from any other
 phone — the reply comes from the same orchestrator the web chat uses.
 
+### 7. Voice channel
+
+One-time: download a Piper voice model (default is `en_US-lessac-medium`,
+~60MB — matches `TTS_VOICE` in `.env`):
+
+```bash
+# from backend/
+.venv/Scripts/python -m piper.download_voices --download-dir ../storage/voices en_US-lessac-medium
+```
+
+faster-whisper's STT model downloads automatically on first use (cached
+under `~/.cache/huggingface`) — no separate step needed. With the backend
+running (step 4, **with `--ws-max-size` set**) and the frontend running
+(step 4's second half), open the app and switch to the **Voice** tab,
+enter a phone number, click **Start voice call**, then hold the mic
+button to talk. First use will prompt for microphone permission.
+
 ## Docker (optional)
 
 ```bash
@@ -162,15 +187,19 @@ hospital-automation/
       cli_repl.py             <- text REPL for exercising the orchestrator directly
       doctor_cli.py            <- crude internal tool: complete a visit, attach notes
       models/                <- SQLAlchemy models
-      services/              <- DB access, business logic, PDF gen, payment providers
-      agents/                <- LangGraph orchestrator + specialist agents
-      channels/               <- web_chat, whatsapp_webhook, payments_web, reports_web
+      services/              <- DB access, business logic, PDF gen, payment providers, STT/TTS
+      agents/                <- LangGraph orchestrator + specialist agents (incl. voice_agent.py)
+      channels/               <- web_chat, whatsapp_webhook, payments_web, reports_web, voice_ws
       llm/                    <- ollama_client.py
     alembic/
     tests/
   whatsapp-gateway/            <- Node + Baileys unofficial WhatsApp bridge
-  frontend/                    <- React + Vite chat widget
+  frontend/                    <- React + Vite widget (text chat + voice call modes)
+  storage/
+    reports/                  <- generated PDFs (gitignored)
+    voices/                   <- downloaded Piper voice models (gitignored)
   scripts/
     seed_demo_data.py
     demo_walkthrough.py       <- scripted book->pay->complete->consent->deliver transcript
+    stress_test.py            <- concurrent-load + race-condition smoke test
 ```

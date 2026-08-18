@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.channels.internal import router as internal_router
 from app.channels.payments_web import router as payments_router
 from app.channels.reports_web import router as reports_router
+from app.channels.voice_ws import router as voice_router
 from app.channels.web_chat import router as web_chat_router
 from app.channels.whatsapp_webhook import router as whatsapp_router
 from app.config import get_settings
@@ -27,6 +28,7 @@ app.include_router(payments_router)
 app.include_router(reports_router)
 app.include_router(internal_router)
 app.include_router(whatsapp_router)
+app.include_router(voice_router)
 
 
 @app.get("/health")

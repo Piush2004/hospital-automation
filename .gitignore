@@ -21,6 +21,11 @@ venv/
 storage/reports/*.pdf
 !storage/reports/.gitkeep
 
+# Voice models (downloaded via piper.download_voices / faster-whisper's
+# own HF cache) — large binaries, fetched on demand, not committed.
+storage/voices/*
+!storage/voices/.gitkeep
+
 # Node
 node_modules/
 dist/
