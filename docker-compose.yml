@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Optional one-command spin-up. Everything here also runs without Docker
 # via plain pip/npm — see README.md "Local dev (no Docker)".
 #

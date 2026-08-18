@@ -4,22 +4,94 @@ This file is the persistent memory for this project across Claude Code
 sessions. **Read this first in any new session.** Update the "Status" and
 "Deviations from plan" sections at the end of every phase, and commit.
 
+## RESUME HERE (session 4, 2026-08-18)
+
+**Phases 0-9 all done and verified** (backend live via curl, frontend
+live via real browser clicks). Nothing mid-edit, nothing uncommitted.
+Next concrete work is in **"What's left"** just below STATUS — read that
+section before picking a task; don't assume Phase 10 is automatically
+next. One open item from *this* session: **Docker Compose verification
+was attempted and blocked by Docker Desktop itself being unresponsive**
+(not a repo bug — `docker compose config` validates cleanly, but `docker
+info`/`docker ps` hung/500'd against the Desktop Linux engine pipe).
+Retry `docker compose build && docker compose up -d` once Docker Desktop
+is confirmed healthy on whatever machine is running this.
+
 ---
 
-## STATUS (updated 2026-08-18, session 3)
+## STATUS (updated 2026-08-18, session 4)
 
-**Phases 0-8 done**, plus a stress-test pass earlier this session that
-found and fixed two real concurrency bugs (see "Stress test findings"
-below — do this before trusting the app under any real concurrent load,
-it's not optional polish). A real conversation — browser text chat,
-CLI, real WhatsApp, or now browser voice — can triage a symptom, assign
-a doctor, book a real appointment, pay for it (mock checkout by
-default), have a doctor complete the visit with notes, ask the patient
-for consent, and deliver a generated PDF report — fully offline, end to
-end, over any of those four channels, verified safe under concurrent
-multi-patient load. Phase 9 (admin dashboard) is the nominal next phase,
-but real auth is worth considering first — see "Deviations" for why it's
-been deferred multiple times now.
+**Phases 0-9 done.** Staff (doctor/front_desk/admin) now log in with
+real JWT auth and use two dashboards instead of `doctor_cli.py`/nothing;
+patient-facing channels are unchanged (still phone-identified, no
+login). Full loop across all four patient channels (text, voice,
+WhatsApp, CLI) plus the two staff dashboards is live-verified this
+session. See "What's built (Phase 9)" below for detail, and "Stress test
+findings" further down for the concurrency bugs fixed in session 3 —
+still relevant, still worth re-running `scripts/stress_test.py` if you
+add more concurrent-write paths.
+
+### What's left (roadmap — check this before assuming what's next)
+
+**Do soon, not deferred indefinitely:**
+- **Docker Compose end-to-end verification.** `docker-compose.yml` wires
+  up all four services and `docker compose config` validates cleanly,
+  but it has **never actually been run successfully** — attempted this
+  session, blocked by Docker Desktop's daemon itself being unresponsive
+  (`500 Internal Server Error` / hangs against
+  `dockerDesktopLinuxEngine` pipe, on `docker info`/`docker ps`, before
+  even getting to a build). Not a repo issue. Retry `docker compose build
+  && docker compose up -d` once Docker Desktop is healthy; this directly
+  fixes the whole "backend dies when the terminal session ends" class of
+  annoyance from earlier in session 3/4, so it's worth prioritizing over
+  new feature work once unblocked.
+- **Phase 10 — tests & polish.** Broader pytest coverage pass (current
+  channel-adapter testing gap is documented in Deviations — consider
+  whether it's worth closing now that `Depends(get_db)` exists as a
+  pattern), general cleanup, and a full README re-read against reality —
+  9 phases of changes since Phase 0 means some setup steps may have
+  drifted from what's actually true. Walk through the README start to
+  finish on a clean checkout as part of this.
+
+**Needs the user, not more Claude Code work** (these are written to be
+as turnkey as the README steps can make them — the point is *doing* them
+takes a human, not that anyone needs to figure out how):
+- **Real WhatsApp pairing** — `cd whatsapp-gateway && npm start`, scan
+  the QR code with a real phone (throwaway number, see the ToS caveat).
+  README step 6 covers this; nothing else needed first.
+- **Real browser-mic voice check** — open the Voice tab, grant mic
+  permission once, talk to it. README step 7. This is a one-time human
+  action per browser/profile; the backend pipeline is already verified
+  independent of it (see "What's built (Phase 8)").
+- **Razorpay test-mode keys** (to try `MOCK_PAYMENTS=false`) — sign up
+  free at https://dashboard.razorpay.com/signup, switch to **Test Mode**
+  (toggle in the dashboard), get `Key Id`/`Key Secret` from **Settings →
+  API Keys → Generate Test Key**. Set `RAZORPAY_KEY_ID`,
+  `RAZORPAY_KEY_SECRET`, and `MOCK_PAYMENTS=false` in `.env`. Untested by
+  any Claude Code session so far (see Deviations) — smoke-test the
+  booking flow once switched before trusting it.
+- **SMTP credentials** (to enable email report delivery alongside chat)
+  — easiest free option: a Gmail account's **App Password** (Google
+  Account → Security → 2-Step Verification → App passwords; needs 2FA
+  enabled first). Set `SMTP_ENABLED=true`, `SMTP_HOST=smtp.gmail.com`,
+  `SMTP_PORT=587`, `SMTP_USER=<your gmail>`, `SMTP_PASSWORD=<app
+  password>`, `SMTP_FROM=<your gmail>` in `.env`. Also untested (see
+  Deviations) — `app/services/email.py` is written but no real SMTP
+  account exercised it.
+
+**Beyond-MVP notes — capture for later, don't build now:**
+- Official WhatsApp Cloud API migration, off Baileys, before any real
+  (non-prototype) use — free tier exists but needs Meta business
+  verification.
+- Real PSTN telephony (Twilio/Exotel) if actual phone calls are ever
+  wanted — costs money, currently browser-only voice.
+- Secrets management beyond a local `.env` file — fine for local dev,
+  not for any real deployment.
+- A real Postgres deployment instead of SQLite, if this ever needs more
+  than one writer or a machine that isn't "my laptop." The DB URL swap
+  is designed to be one line (`DATABASE_URL`); nothing else currently
+  assumes SQLite specifically except the tz-naive-readback quirk already
+  documented and worked around.
 
 ### Stress test findings (session 3) — fixed, re-verified
 
@@ -101,15 +173,30 @@ Environment discovered/changed this session:
   actual responses). If you use `--reload`, verify routes actually
   changed after an edit (curl something route-specific) rather than
   trusting the log alone.
-- Dev servers as of this update (session 3): **backend uvicorn and
-  frontend are both running** (:8000, :5173). Backend is running
-  `uvicorn app.main:app --port 8000 --ws-max-size 20971520` — no
-  `--reload`, and note the `--ws-max-size` flag is now required for the
-  voice channel to work (see Phase 8 below); restart manually with that
-  flag after further code changes. The WhatsApp gateway (:3001) is
-  **stopped** — no real WhatsApp account has been paired against this
-  build yet, so `whatsapp-gateway/auth_info/` is still empty and a fresh
-  `npm start` will print a QR code needing a real scan.
+- **Server-restart-loop diagnosed (session 4): dev servers were child
+  processes of the interactive Claude Code session** — closing/ending
+  that session killed them, which looked like a mystery "backend keeps
+  dying" bug across the session 3→4 boundary but wasn't one. Fix applied
+  this session: start dev servers with `nohup ... &` + `disown` (see any
+  recent server-start command in this session's history) so they're
+  detached from the shell and survive the session ending. **The real,
+  durable fix is Docker Compose** (see "What's left") — detached nohup
+  processes are a good-enough workaround, not a replacement for it.
+- Dev servers as of this update (session 4): **backend uvicorn and
+  frontend both running, detached** (:8000, :5173 — confirmed via health
+  check just now, not assumed). Backend: `uvicorn app.main:app --port
+  8000 --ws-max-size 20971520` (no `--reload` — restart manually after
+  further code changes, `--ws-max-size` still required for voice). The
+  WhatsApp gateway (:3001) is **stopped** — still no real WhatsApp
+  account paired against this build, `whatsapp-gateway/auth_info/` still
+  empty.
+- **Docker Desktop was unresponsive when checked this session** (`docker
+  info`/`docker ps` return `500 Internal Server Error` or hang against
+  the `dockerDesktopLinuxEngine` pipe). `docker compose config` still
+  validates the compose file cleanly, so this is a Desktop/daemon health
+  issue on this machine, not a repo problem — check Docker Desktop is
+  actually running and healthy before retrying the compose verification
+  in "What's left."
 
 ### What's built (Phases 0-3)
 
@@ -465,12 +552,77 @@ the pytest suite matters even in a fast-moving MVP.
   re-run an equivalent live test rather than trusting pytest to catch a
   regression here.
 
-Next up: Phase 9 (admin dashboard) is the nominal next phase, but
-building real auth might be worth doing first or alongside it — no JWT/
-login system exists anywhere yet, and it's been deferred multiple times
-now (see Deviations). Worth explicitly asking the user which they'd
-rather have next rather than assuming the numeric phase order still
-matches priority.
+### What's built (Phase 9, session 4)
+
+- **`app/services/auth.py`**: staff-only JWT auth. `passlib`
+  (bcrypt scheme) for hashing, `python-jose` for JWT encode/decode.
+  `STAFF_ROLES = (doctor, front_desk, admin)` — patient role can never
+  log in even if a User row existed for one (tested). First module in
+  this codebase to use FastAPI's `Depends(get_db)` instead of
+  `SessionLocal()` directly, specifically so the new routes get real
+  `TestClient` + test-DB-override pytest coverage — see
+  `tests/conftest.py`'s new `client` fixture. Every other channel still
+  uses `SessionLocal()` directly and is untouched by this.
+- **`app/channels/auth_web.py`**: `POST /auth/login` (OAuth2
+  password-flow shape — form-encoded `username`/`password`, not JSON —
+  specifically so FastAPI's `/docs` "Authorize" button works for manual
+  poking), `GET /auth/me`.
+- **`app/channels/doctor_dashboard.py`**: replaces `doctor_cli.py`'s
+  day-to-day role. `GET /api/doctor/appointments` scoped to the logged-in
+  doctor's own `Doctor.user_id` link (an improvement `doctor_cli.py`
+  structurally couldn't make — it had no identity to scope by).
+  `POST /api/doctor/appointments/{id}/complete` calls the same
+  `complete_visit`/`generate_report`/consent-queue functions
+  `doctor_cli.py` uses, then `await`s `notifications.push_live()`
+  directly (no HTTP hop — this runs in-process, unlike `doctor_cli.py`).
+  Completing another doctor's appointment 404s (not 403 — doesn't leak
+  which ids belong to whom).
+- **`app/channels/admin_dashboard.py`**: appointments table (filterable
+  by status/doctor), doctor calendar (grouped list per doctor, not a
+  real calendar widget — MVP scope), audit log viewer, emergency inbox
+  with acknowledge (flips the session to `closed`).
+- **`/internal/push-live` locked down** behind `get_current_staff_user`.
+  `doctor_cli.py` (kept as a scriptable fallback — `demo_walkthrough.py`
+  still drives its functions directly) now logs in first via the same
+  `/auth/login` endpoint and passes its token — this doubles as a manual
+  check that auth actually works, exercised from a second, independent
+  caller.
+- **`scripts/seed_demo_data.py`** creates a login for every seeded
+  doctor (linked via `Doctor.user_id`) plus one `admin@clinic.local` and
+  one `frontdesk@clinic.local`, all sharing one password printed to the
+  console (`DEV_STAFF_PASSWORD` — local dev only, never real).
+- **Frontend**: added `react-router-dom` (first genuine need for real
+  navigation — login vs. patient chat vs. two distinct staff dashboards
+  are separate pages, not another mode-toggle). `frontend/src/pages/`:
+  `StaffLogin`, `DoctorDashboard`, `AdminDashboard`, and the pre-existing
+  chat/voice toggle moved into `PatientHome`. `ProtectedRoute` is
+  client-side-only UX (skips the flash of a page that would immediately
+  401) — the server enforces the real boundary regardless.
+- **Two real bugs found and fixed, both by actually using the feature,
+  not by inspection:**
+  1. `passlib` 1.7.4 probes `bcrypt.__about__.__version__`, which
+     `bcrypt>=4.1` removed — password hashing threw on every call the
+     moment the seed script tried to hash a password. Pinned
+     `bcrypt<4.1`.
+  2. `complete_visit()` hardcoded `actor="doctor_cli"` in the audit log
+     even when called from the dashboard — caught because the admin
+     dashboard's own audit-log tab surfaced `doctor_cli` for an action
+     actually taken through the dashboard, which is exactly the kind of
+     thing that feature exists to make visible. Now takes an `actor`
+     parameter; the dashboard passes `user:{id}`.
+- **Verified thoroughly, live, not just via curl**: full click-through in
+  a real browser — doctor login → own-scoped appointment list → complete
+  visit (with real notes typed into the textarea) → confirmed the report
+  generated, the consent question reached the patient's actual chat
+  session (checked by reading that session's history from the DB
+  afterward) → logged out → admin login → clicked through all four
+  dashboard tabs → triggered a real emergency via the CLI → confirmed it
+  appeared in the emergency inbox → clicked Acknowledge → confirmed the
+  status flipped. Unauthenticated access to `/staff/admin` redirects to
+  `/staff/login`, confirmed by direct navigation while logged out.
+  22 new pytest tests (56 total, all passing).
+
+Next up: see "What's left" near the top of this file.
 
 ---
 
@@ -709,15 +861,20 @@ own smoke test.
   built (Phase 7)" above); the actual pairing requires a human with a
   phone, which no session has had. Treat the gateway as "should work,
   unverified past that specific boundary" rather than "done."
-- **Auth/JWT has now been deferred twice** (Phase 5's payments and Phase
-  6's report-completion both explicitly chose not to build it). This is
-  still the right call — building real auth for one gated action each
-  time is worse than building it once, properly, when something actually
-  needs a full login system (Phase 9's admin dashboard is the obvious
-  trigger). But it's worth flagging explicitly rather than let it become
-  an implicit assumption: **there is currently no user authentication
-  anywhere in this app.** `doctor_cli.py` and the `/internal/*` and
-  `/reports/{id}/download` endpoints all trust the caller.
+- **Auth/JWT — deferred twice (Phases 5, 6), then built properly in
+  Phase 9, which was the right call in hindsight.** Building real auth
+  once, when the admin dashboard actually needed a full login system,
+  produced a cleaner result than gating one action at a time would have.
+  `/reports/{id}/download` remains intentionally ungated (consent_at is
+  the real gate there, and it's meant to be a link a patient can open
+  without logging in); everything staff-facing now requires auth.
+- **`passlib`/`bcrypt` version incompatibility** (Phase 9): `passlib`
+  1.7.4 is unmaintained and probes `bcrypt.__about__.__version__`, which
+  `bcrypt>=4.1` removed, breaking password hashing entirely at first
+  use. Pinned `bcrypt<4.1` in `requirements.txt`. If a future dependency
+  bump pulls in a newer bcrypt transitively, this will break again with
+  the same opaque `AttributeError` — check the pin first before assuming
+  a new bug.
 - **Concurrency bugs (double-booking race, event-loop blocking) were only
   found by an explicit stress test, not by any of the prior manual/CLI
   smoke testing.** See "Stress test findings" in STATUS above for the
