@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Appointment, AppointmentStatus, Doctor, DoctorAvailability
@@ -8,6 +9,16 @@ from app.services.doctors import ACTIVE_STATUSES
 
 # MVP note: everything is treated as UTC. A real deployment would carry a
 # hospital/doctor timezone; out of scope for the local prototype.
+
+
+class SlotAlreadyBookedError(RuntimeError):
+    """Raised when two concurrent requests both pass the "is this slot
+    free?" check and race to insert - the DB's partial unique index (see
+    Appointment.__table_args__) is the actual source of truth here, this
+    exception just turns that IntegrityError into something callers can
+    handle gracefully (re-offer fresh availability) instead of a raw DB
+    error. Found via stress-testing concurrent bookings for the same slot.
+    """
 
 
 def _existing_slots(db: Session, doctor_id: int, window_start: datetime, window_end: datetime) -> set[datetime]:
@@ -82,6 +93,12 @@ def book_appointment(
     it (see app/agents/payments_agent.py). Slot-exclusion treats
     pending_payment as active (see doctors.ACTIVE_STATUSES) so a second
     patient can't grab the same slot while payment is outstanding.
+
+    Raises SlotAlreadyBookedError if a concurrent request won the race for
+    this exact (doctor, slot_start) first - available_slots() alone can't
+    prevent this (two requests can both see the slot as free before
+    either commits), so the DB's partial unique index is the real guard;
+    this just makes hitting it a clean, catchable outcome.
     """
     appointment = Appointment(
         patient_id=patient_id,
@@ -92,7 +109,13 @@ def book_appointment(
         reason=reason,
     )
     db.add(appointment)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise SlotAlreadyBookedError(
+            f"Doctor {doctor_id} slot {slot_start.isoformat()} was just booked by someone else."
+        ) from exc
     log_action(
         db,
         actor="agent:scheduling",

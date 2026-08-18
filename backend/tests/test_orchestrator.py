@@ -121,6 +121,42 @@ def test_emergency_short_circuits_flow(db):
     assert "emergency" in reply.lower()
 
 
+def test_slot_taken_by_race_reoffers_fresh_slots(db):
+    """Simulates the exact race stress-testing found: between offering a
+    slot and the patient's reply arriving, someone else books that same
+    slot first. The orchestrator should recover, not crash the turn.
+    """
+    from datetime import datetime
+
+    from app.services.scheduling import book_appointment
+
+    doctor = _seed(db)
+    patient = Patient(full_name="Racer", phone="+1004")
+    other_patient = Patient(full_name="Winner", phone="+1005")
+    db.add_all([patient, other_patient])
+    db.flush()
+
+    llm = _StubLLM()
+    state, _greeting = initial_state(patient)
+    state, _reply = run_turn(db, state, "skin rash", llm=llm)
+    assert state["stage"] == "choose_slot"
+
+    # Someone else grabs the first offered slot first.
+    first_slot_start, first_slot_end = state["candidate_slots"][0]
+    book_appointment(
+        db, other_patient.id, doctor.id, datetime.fromisoformat(first_slot_start), datetime.fromisoformat(first_slot_end)
+    )
+    db.commit()
+
+    state, reply = run_turn(db, state, "1", llm=llm)
+
+    assert state["stage"] == "choose_slot"  # re-offered, not crashed
+    assert "just taken" in reply.lower()
+    assert "reply with a number" in reply.lower()
+    # The re-offered list should no longer include the now-taken slot first.
+    assert state["candidate_slots"][0][0] != first_slot_start
+
+
 def test_invalid_slot_choice_reprompts(db):
     doctor = _seed(db)
     patient = Patient(full_name="Bob", phone="+1002")

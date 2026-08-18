@@ -10,6 +10,7 @@ on, every text frame sent by the client is treated as one user message;
 the server replies with one JSON frame per turn.
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -36,33 +37,43 @@ async def chat_ws(websocket: WebSocket, phone: str = Query(...)) -> None:
     live_connections.register(ConversationChannel.web_chat, phone, websocket)
     db = SessionLocal()
 
-    try:
+    def load_or_start_session():
+        # All-synchronous: SQLAlchemy's Session and everything run_turn()
+        # touches (DB queries, the Ollama HTTP call) are blocking calls.
+        # Doing this inline in the async handler blocks the *entire*
+        # event loop for the duration - including other connections'
+        # websocket pings, which start timing out under any real
+        # concurrency (found via stress-testing). asyncio.to_thread here
+        # and around each turn below keeps the event loop free.
         patient = get_or_create_patient(db, phone)
         session = get_active_session(db, ConversationChannel.web_chat, phone)
-
         if session is None:
             state, greeting = initial_state(patient)
             session = create_session(db, ConversationChannel.web_chat, phone, patient.id, state)
             append_history(session, "assistant", greeting)
             db.commit()
-            await websocket.send_json({"role": "assistant", "content": greeting})
-        else:
-            state = session.state
-            if session.history:
-                await websocket.send_json({"role": "assistant", "content": session.history[-1]["content"]})
+            return session, state, greeting
+        return session, session.state, (session.history[-1]["content"] if session.history else None)
+
+    def process_turn(state: dict, user_input: str):
+        append_history(session, "user", user_input)
+        new_state, reply = run_turn(db, state, user_input, llm=_llm)
+        save_state(session, new_state, is_emergency=new_state.get("is_emergency", False))
+        append_history(session, "assistant", reply)
+        db.commit()
+        return new_state, reply
+
+    try:
+        session, state, first_message = await asyncio.to_thread(load_or_start_session)
+        if first_message:
+            await websocket.send_json({"role": "assistant", "content": first_message})
 
         while True:
             user_input = await websocket.receive_text()
             if not user_input.strip():
                 continue
 
-            append_history(session, "user", user_input)
-
-            new_state, reply = run_turn(db, state, user_input, llm=_llm)
-            state = new_state
-            save_state(session, state, is_emergency=state.get("is_emergency", False))
-            append_history(session, "assistant", reply)
-            db.commit()
+            state, reply = await asyncio.to_thread(process_turn, state, user_input)
 
             await websocket.send_json({"role": "assistant", "content": reply, "stage": state.get("stage")})
 

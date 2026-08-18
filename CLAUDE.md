@@ -6,18 +6,66 @@ sessions. **Read this first in any new session.** Update the "Status" and
 
 ---
 
-## STATUS (updated 2026-08-18, session 2)
+## STATUS (updated 2026-08-18, session 3)
 
-**Phases 0-7 done.** A real text conversation (browser chat widget, CLI,
-or now real WhatsApp) can triage a symptom, assign a doctor, book a real
-appointment, pay for it (mock checkout by default), have a doctor
-complete the visit with notes, ask the patient for consent, and deliver
-a generated PDF report in-chat — fully offline, end to end, over any of
-those three channels. Original session target was Phase 5+6; Phase 7 was
-built too since there was plenty of headroom left (user opted in when
-asked, given the WhatsApp/Baileys ban-risk caveat). Phase 8 (voice) is
-next, unless Phase 9 (admin dashboard) or real auth becomes the
-priority instead — see "Deviations" for why auth got deferred twice now.
+**Phases 0-7 done, plus a stress-test pass that found and fixed two real
+concurrency bugs** (see "Stress test findings" below — do this before
+trusting the app under any real concurrent load, it's not optional
+polish). A real text conversation (browser chat widget, CLI, or real
+WhatsApp) can triage a symptom, assign a doctor, book a real appointment,
+pay for it (mock checkout by default), have a doctor complete the visit
+with notes, ask the patient for consent, and deliver a generated PDF
+report in-chat — fully offline, end to end, over any of those three
+channels, and now verified safe under concurrent multi-patient load.
+Phase 8 (voice) is next, unless Phase 9 (admin dashboard) or real auth
+becomes the priority instead — see "Deviations" for why auth got
+deferred multiple times now.
+
+### Stress test findings (session 3) — fixed, re-verified
+
+Ran `scripts/stress_test.py` (new this session) against the live server:
+8 patients concurrently competing for the same doctor's slots, plus 15
+concurrent full booking flows across departments. **First run failed
+badly** — both bugs below were real, not test artifacts:
+
+1. **Double-booking race condition.** `book_appointment()` only checked
+   "is this slot free?" via a SELECT, then inserted — no atomicity
+   between the two. One slot got booked **7 times** in the first run.
+   Fixed with a DB-level partial unique index on
+   `(doctor_id, slot_start)` WHERE status is active (see
+   `Appointment.__table_args__` in `app/models/appointment.py`,
+   migration `da269aa6b22a`). `book_appointment()` now catches the
+   resulting `IntegrityError` and raises a clean `SlotAlreadyBookedError`;
+   the orchestrator's `slot_choice_node` catches *that* and re-offers
+   fresh availability instead of crashing the turn — verified this
+   actually happens gracefully in both a pytest test
+   (`test_slot_taken_by_race_reoffers_fresh_slots`) and the live rerun
+   (all 8 racing patients landed on 8 *different* slots).
+2. **Event-loop blocking.** `web_chat.py`'s websocket handler called the
+   synchronous `run_turn()` — which does blocking DB queries and a
+   blocking Ollama HTTP call — directly inside `async def`. Under any
+   real concurrency this blocks the *entire* event loop long enough that
+   other connections' keepalive pings time out; every single connection
+   in the first stress run failed with `ConnectionClosedError`. Fixed by
+   wrapping the blocking work in `asyncio.to_thread` (both the initial
+   session setup and each turn). Applied the same fix to
+   `payments_web.py`'s `/pay/{ref}/complete` for consistency, even though
+   its blocking window is much smaller (no LLM call there).
+
+**Re-ran after fixing both**: 8/8 race-test bookings succeeded (each
+landing on a distinct slot), 15/15 load-test bookings succeeded (p50
+5.9s / p95 8.7s, dominated by the 7b model's triage latency, not the
+fixes), zero double-bookings, zero server errors. This is what "passes
+properly" looked like — the user asked for a stress test specifically
+*before* moving to Phase 8, and it's exactly the kind of bug a
+CLI-driven or single-browser-tab smoke test would never have surfaced.
+34 pytest tests now (4 new, all passing).
+
+If you add more concurrent-write paths later (e.g. Phase 8 voice
+sessions, or a future admin dashboard doing bulk operations), re-run
+`scripts/stress_test.py` rather than assuming this class of bug can't
+recur — the pattern to watch for is any `async def` FastAPI handler that
+calls synchronous DB/LLM code without `asyncio.to_thread`.
 
 Environment discovered/changed this session:
 - Python 3.14.5 is the system default, but LangGraph/SQLAlchemy/etc. are
@@ -53,15 +101,14 @@ Environment discovered/changed this session:
   actual responses). If you use `--reload`, verify routes actually
   changed after an edit (curl something route-specific) rather than
   trusting the log alone.
-- Dev servers as of this update: **backend uvicorn is running** on :8000
-  (no `--reload`, see above — restart manually after further code
-  changes; running the pinned 7b model). Frontend (:5173) and the
-  WhatsApp gateway (:3001) are **both stopped** (gateway was killed after
-  Phase 7 testing since it can't do anything useful unpaired — no real
-  WhatsApp account has been paired against this build yet, so
-  `whatsapp-gateway/auth_info/` is empty and a fresh `npm start` will
-  print a QR code needing a real scan). Restart either per README when
-  needed.
+- Dev servers as of this update (session 3): **backend uvicorn and
+  frontend are both running** (:8000, :5173 — restarted fresh this
+  session, backend picked up the concurrency fixes above; no `--reload`
+  on the backend, restart manually after further code changes). The
+  WhatsApp gateway (:3001) is **stopped** — no real WhatsApp account has
+  been paired against this build yet, so `whatsapp-gateway/auth_info/` is
+  still empty and a fresh `npm start` will print a QR code needing a real
+  scan.
 
 ### What's built (Phases 0-3)
 
@@ -580,3 +627,14 @@ own smoke test.
   an implicit assumption: **there is currently no user authentication
   anywhere in this app.** `doctor_cli.py` and the `/internal/*` and
   `/reports/{id}/download` endpoints all trust the caller.
+- **Concurrency bugs (double-booking race, event-loop blocking) were only
+  found by an explicit stress test, not by any of the prior manual/CLI
+  smoke testing.** See "Stress test findings" in STATUS above for the
+  full writeup — kept brief here as a pointer: every prior session's
+  testing was single-connection, sequential, so neither bug had a chance
+  to show up. Any future channel or endpoint that does DB writes from an
+  `async def` handler needs the same `asyncio.to_thread` treatment on
+  its blocking calls, and any future "check then insert" pattern against
+  a resource with real contention (slots, but potentially other things
+  later) needs to ask whether it needs the same DB-level constraint
+  treatment `Appointment.__table_args__` got here.

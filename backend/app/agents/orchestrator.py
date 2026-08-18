@@ -64,6 +64,7 @@ from app.models import Appointment, Patient, PaymentStatus, Report
 from app.services.audit import log_action
 from app.services.emergency import detect_emergency
 from app.services.report_requests import mentions_report_request
+from app.services.scheduling import SlotAlreadyBookedError
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +238,30 @@ def _make_slot_choice_node(db: Session):
         from app.models import Doctor  # local import to avoid cycle at module load
 
         doctor = db.get(Doctor, doctor_id)
-        appointment = confirm_booking(db, patient, doctor, choice, reason=state.get("symptom_text"))
+
+        try:
+            appointment = confirm_booking(db, patient, doctor, choice, reason=state.get("symptom_text"))
+        except SlotAlreadyBookedError:
+            # Someone else's request won the race for this exact slot
+            # between us offering it and this reply arriving - refresh
+            # with whatever's actually still open rather than erroring out.
+            fresh_slots = propose_slots(db, doctor.id)
+            if not fresh_slots:
+                return {
+                    "reply": (
+                        f"Sorry, that slot with {doctor.full_name} was just taken, and there's nothing else "
+                        "open in the next two weeks. Please contact the front desk directly."
+                    ),
+                    "stage": "done",
+                }
+            return {
+                "candidate_slots": [[s.isoformat(), e.isoformat()] for s, e in fresh_slots],
+                "reply": (
+                    f"Sorry, that slot with {doctor.full_name} was just taken by someone else. "
+                    f"Here's what's still available:\n{format_slot_options(fresh_slots)}\nReply with a number to book."
+                ),
+                "stage": "choose_slot",
+            }
 
         payment, link = create_payment_link(db, appointment)
 

@@ -8,6 +8,8 @@ points the patient at Razorpay's own hosted checkout instead; this route
 never comes into play for that path.
 """
 
+import asyncio
+
 from fastapi import APIRouter, Form, HTTPException
 from fastapi.responses import HTMLResponse
 
@@ -80,7 +82,12 @@ async def pay_complete(reference: str, outcome: str = Form(...)) -> str:
         raise HTTPException(status_code=400, detail="outcome must be 'paid' or 'failed'")
 
     db = SessionLocal()
-    try:
+
+    def resolve_payment():
+        # Sync DB work, offloaded to a thread so it doesn't block the
+        # event loop - same rationale as web_chat.py's fix (this one's
+        # window is much smaller with no LLM call involved, but the
+        # category of bug is identical, so fixed the same way).
         payment = db.query(Payment).filter_by(provider_ref=reference).one_or_none()
         if payment is None or payment.provider != "mock":
             raise HTTPException(status_code=404, detail="Payment not found")
@@ -93,6 +100,10 @@ async def pay_complete(reference: str, outcome: str = Form(...)) -> str:
         sessions = notifications.queue_message_for_patient(
             db, payment.appointment.patient_id, message, state_update=state_update
         )
+        return message, sessions
+
+    try:
+        message, sessions = await asyncio.to_thread(resolve_payment)
         await notifications.push_live(sessions)
 
         return f"""

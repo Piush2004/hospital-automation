@@ -1,7 +1,9 @@
 from datetime import time
 
-from app.models import Department, Doctor, DoctorAvailability, Patient
-from app.services.scheduling import available_slots, book_appointment
+import pytest
+
+from app.models import AppointmentStatus, Department, Doctor, DoctorAvailability, Patient
+from app.services.scheduling import SlotAlreadyBookedError, available_slots, book_appointment
 
 
 def _make_doctor(db, day_of_week: int, start: time, end: time, slot_minutes: int = 30) -> Doctor:
@@ -58,6 +60,50 @@ def test_available_slots_excludes_booked(db):
 
     assert len(slots) == 1
     assert slots[0][0].hour == 9 and slots[0][0].minute == 30
+
+
+def test_double_booking_same_doctor_slot_raises(db):
+    """The actual DB-level guard against the race condition found via
+    stress-testing concurrent bookings - see Appointment.__table_args__.
+    """
+    from datetime import datetime, timezone
+
+    doctor = _make_doctor(db, day_of_week=0, start=time(9, 0), end=time(10, 0))
+    patient1 = Patient(full_name="P1", phone="+1000")
+    patient2 = Patient(full_name="P2", phone="+1001")
+    db.add_all([patient1, patient2])
+    db.flush()
+
+    start = datetime(2026, 8, 17, 9, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 17, 9, 30, tzinfo=timezone.utc)
+
+    book_appointment(db, patient1.id, doctor.id, start, end)
+
+    with pytest.raises(SlotAlreadyBookedError):
+        book_appointment(db, patient2.id, doctor.id, start, end)
+
+
+def test_double_booking_allowed_after_first_is_cancelled(db):
+    """The partial index only covers active statuses - a cancelled slot
+    should be rebookable.
+    """
+    from datetime import datetime, timezone
+
+    doctor = _make_doctor(db, day_of_week=0, start=time(9, 0), end=time(10, 0))
+    patient1 = Patient(full_name="P1", phone="+1002")
+    patient2 = Patient(full_name="P2", phone="+1003")
+    db.add_all([patient1, patient2])
+    db.flush()
+
+    start = datetime(2026, 8, 17, 9, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 17, 9, 30, tzinfo=timezone.utc)
+
+    first = book_appointment(db, patient1.id, doctor.id, start, end)
+    first.status = AppointmentStatus.cancelled
+    db.flush()
+
+    second = book_appointment(db, patient2.id, doctor.id, start, end)
+    assert second.id != first.id
 
 
 def test_book_appointment_writes_audit_log(db):
